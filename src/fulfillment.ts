@@ -13,9 +13,12 @@
  * inline.
  */
 
-import { randomUUID } from 'node:crypto';
 import type { Product } from './catalog.js';
 import type { PurchaseBody } from './schemas.js';
+
+// Use the Web-standard global `crypto` so this file works on both
+// Node (v20+) and Vercel Edge runtime without a `node:crypto` import.
+const randomUUID = () => crypto.randomUUID();
 
 export interface FulfillmentIntent {
   order_id: string;
