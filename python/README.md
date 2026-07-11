@@ -33,6 +33,19 @@ The `h402` CLI creates all ignored `runtime/` subdirectories automatically and
 anchors them to this Python project, regardless of the caller's current working
 directory.
 
+All H browser calls resolve through `h_browser_runtime.py`. It reads the pinned
+profile UUID from `profile-state.json`, confirms the configured H environment
+still points to that profile, inherits the same custom proxy, and generates the
+same overrides for catalog, cart, checkout, and purchase sessions. Normal calls
+provision a fresh hosted browser from that pinned profile; `--resume` attaches
+to the exact warm idle session instead.
+
+Browser calls accept `--proxy true|false` (default `true`) and
+`--h-environment env1`. The environment defaults to the value recorded in
+`profile-state.json`; only that configured environment is supported, and any
+other name fails closed. These options may appear anywhere on an `h402`
+cart/checkout command and are also accepted by `catalog refresh`.
+
 Create the ignored runtime tree and initialize the recipient address book on a
 fresh clone:
 
@@ -117,10 +130,34 @@ grammar. Examples:
 ./h402 cart reset add -i checkout -i
 ./h402 cart reset add mcmaster:92224A112 checkout 1
 ./h402 cart noreset add 92224A112 checkout 1
+./h402 cart add 92224A112 checkout 1 --place-order
 ```
 
 `cart add` resets automatically. Add the literal `noreset` to opt out. Chained
 cart actions execute as one H browser session.
+
+Checkout stops at review unless `--place-order` is explicitly present. Purchase
+mode captures the review first, requires local SKU/quantity/total authorization
+(default maximum `$50.00`), clicks once, verifies an order number, and saves an
+additional `04-order-confirmed.png` checkpoint.
+
+For developer iteration, successful workflows keep the hosted H session idle
+for 10 minutes and write `runtime/last-h-session.json`. A follow-up workflow can
+add `--resume` to consume that pointer and reconnect to the exact session when
+it is still idle and less than nine minutes old:
+
+```bash
+./h402 cart noreset add 92224A112 --resume
+./h402 checkout 1 --resume
+```
+
+`--resume` may appear anywhere on a cart/checkout command line, for example
+`./h402 --resume cart add 2` or `./h402 cart add --resume 2`. Without it, a new
+H session starts with the same persisted browser profile; merchant-side cart
+state may still carry over and is always re-read by the workflow.
+
+Normal startup clears the previous pointer. Errors, Ctrl-C, stale pointers, and
+non-idle H status fail closed without starting a replacement session.
 
 Empty the authenticated McMaster cart, verify it is empty, save a screenshot,
 and stop:
@@ -148,7 +185,7 @@ The interactive flow asks for the product first and then a recipient from the
 address book. The selected name/address is used for both delivery and billing;
 the card always comes from `.env`. Copy `addresses.example.json` to
 `runtime/private/addresses.json`, edit its recipient list, and use `--max-total` to set
-the fail-closed order ceiling (default: `$25.00` including shipping and tax).
+the fail-closed order ceiling (default: `$50.00` including shipping and tax).
 
 Each run atomically mints the next demo session ID (`S001` through `S999`) and
 stores its artifacts in a matching directory. The agent captures three named
@@ -161,6 +198,13 @@ runtime/sessions/S001/S001-03-place-order-review.png
 runtime/sessions/S001/S001-result.json
 runtime/sessions/S001/S001-timing.jsonl
 ```
+
+Every cart/checkout/reset invocation first captures
+`S001-00-initial-state.png` before changing the browser. This is especially
+useful for resumed sessions. Every workflow PNG receives a dark provenance
+footer with local timestamp/timezone, demo session ID, H session ID, action
+context, and checkpoint name. Each image checkpoint also creates a flat timing
+event in `S001-timing.jsonl`.
 
 If a required checkpoint is missed, the run fails and saves
 `S001-99-final-state.png` as diagnostic evidence when possible.

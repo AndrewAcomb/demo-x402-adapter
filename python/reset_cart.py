@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from add_cached_to_cart import save_image
 from email_2fa import ImapCodeReader
-from h_profile import active_environment_network, newest_browser_profile_id
+from h_browser_runtime import HBrowserRuntime
 from prepare_purchase import (
     LOCAL_FAILURE,
     LOCAL_SUCCESS,
@@ -51,6 +51,10 @@ def main() -> None:
         action="store_true",
         help="Verify the expected public proxy IP before opening McMaster",
     )
+    parser.add_argument("--proxy", choices=("true", "false"), default="true")
+    parser.add_argument(
+        "--h-environment", "--environment", dest="h_environment"
+    )
     args = parser.parse_args()
     enable_tee(args.log_file)
 
@@ -81,28 +85,21 @@ def main() -> None:
 
         tools.append(wait_for_email_2fa_code)
 
-    profile_id = newest_browser_profile_id(client)
-    network = active_environment_network(client)
+    browser_runtime = HBrowserRuntime.resolve(client, args.h_environment)
     proxy_instruction = ""
     if args.verify_proxy:
         proxy_instruction = """
 First inspect the current api.ipify.org JSON and verify the public IP is exactly
 54.71.20.137. If it differs, stop with success=false and report proxy failure.
 """.strip()
-    session = client.start_session(
-        agent="h/web-surfer-pro",
-        overrides={
-            "agent.environments[kind=web].start_url": (
-                "https://api.ipify.org?format=json"
-                if args.verify_proxy
-                else "https://www.mcmaster.com/Order/"
-            ),
-            "agent.environments[kind=web].browser_profile_id": profile_id,
-            "agent.environments[kind=web].persist_browser_profile": True,
-            "agent.environments[kind=web].network": network.model_dump(
-                mode="json", exclude_none=True
-            ),
-        },
+    session = browser_runtime.start_session(
+        client,
+        start_url=(
+            "https://api.ipify.org?format=json"
+            if args.verify_proxy
+            else "https://www.mcmaster.com/Order/"
+        ),
+        network={} if args.proxy == "false" else None,
         answer_schema=ResetResult,
         tools=tools,
         messages=f"""

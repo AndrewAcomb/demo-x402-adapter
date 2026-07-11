@@ -8,20 +8,22 @@ import base64
 import json
 import os
 import re
+import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from threading import Lock
 
 import httpx
+from PIL import Image, ImageDraw, ImageFont
 
 from hai_agents import Client
 from pydantic import BaseModel, Field, field_validator
 
 from email_2fa import ImapCodeReader
-from h_profile import active_environment_network, newest_browser_profile_id
+from h_browser_runtime import HBrowserRuntime
 from prepare_purchase import (
     LOCAL_FAILURE,
     LOCAL_SUCCESS,
@@ -34,13 +36,16 @@ from prepare_purchase import (
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "runtime"
+LAST_SESSION_PATH = RUNTIME / "last-h-session.json"
+DEFAULT_IDLE_TIMEOUT_SECONDS = 600
+MAX_RESUME_AGE_SECONDS = 540
 
 
 class CartResult(BaseModel):
     success: bool
     authenticated: bool
     account_indicator: str = Field(min_length=1)
-    part_number: str = Field(min_length=1)
+    part_number: str | None = None
     cart_quantity: int = Field(ge=0)
     observed_price: str | None = None
     merchandise_total: str | None = None
@@ -49,6 +54,8 @@ class CartResult(BaseModel):
     order_total: str | None = None
     place_order_visible: bool
     place_order_clicked: bool
+    order_confirmed: bool = False
+    order_number: str | None = None
     payment_display: str | None = None
     blocker: str | None = None
     final_url: str = Field(min_length=1)
@@ -77,9 +84,11 @@ class AddressBook(BaseModel):
 
 
 CHECKPOINTS = {
+    "initial-state": "00-initial-state",
     "cart-cleared": "01-cart-cleared",
     "product-in-cart": "02-product-in-cart",
     "place-order-review": "03-place-order-review",
+    "order-confirmed": "04-order-confirmed",
 }
 CATALOG_TIMESTAMP = re.compile(r"^\d{3}-(\d{8}T\d{6}Z)-")
 
@@ -208,11 +217,64 @@ def save_image(image: dict[str, object], destination: Path) -> None:
     destination.write_bytes(payload)
 
 
+def stamp_provenance(
+    path: Path,
+    *,
+    demo_session_id: str,
+    h_session_id: str,
+    context: str,
+) -> None:
+    """Overlay an audit footer without obscuring the browser viewport content."""
+    timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    short_context = textwrap.shorten(context, width=110, placeholder="…")
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+    footer_height = 82
+    canvas = Image.new("RGB", (image.width, image.height + footer_height), (10, 18, 32))
+    canvas.paste(image, (0, 0))
+    draw = ImageDraw.Draw(canvas)
+    top = image.height
+    draw.rectangle((0, top, image.width, canvas.height), fill=(10, 18, 32))
+    draw.rectangle((0, top, 9, canvas.height), fill=(41, 211, 176))
+    font = ImageFont.load_default(size=18)
+    bold_font = ImageFont.load_default(size=19)
+    draw.text(
+        (24, top + 10),
+        f"{demo_session_id}  ·  {timestamp}  ·  H {h_session_id}",
+        font=font,
+        fill=(226, 232, 240),
+    )
+    draw.text(
+        (24, top + 43),
+        short_context,
+        font=bold_font,
+        fill=(250, 204, 21),
+    )
+    canvas.save(path, format="PNG", optimize=True)
+
+
 def write_private_json(path: Path, payload: dict[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temporary.chmod(0o600)
     temporary.replace(path)
+
+
+def consume_resume_pointer(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        raise RuntimeError("No warm H session pointer is available")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    finally:
+        path.unlink(missing_ok=True)
+    saved_at = datetime.fromisoformat(str(payload["saved_at"]))
+    age_seconds = (datetime.now(UTC) - saved_at).total_seconds()
+    if age_seconds < 0 or age_seconds > MAX_RESUME_AGE_SECONDS:
+        raise RuntimeError(
+            f"Warm H session pointer is {age_seconds:.0f}s old; maximum is "
+            f"{MAX_RESUME_AGE_SECONDS}s"
+        )
+    return payload
 
 
 def redact_secrets(value: object) -> object:
@@ -254,12 +316,23 @@ def main() -> None:
     parser.add_argument(
         "--address-file", type=Path, default=RUNTIME / "private/addresses.json"
     )
-    parser.add_argument("--max-total", type=float, default=25.0)
+    parser.add_argument("--max-total", type=float, default=50.0)
+    parser.add_argument(
+        "--place-order",
+        action="store_true",
+        help="Irreversibly click Place Order after local SKU/quantity/total authorization",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Developer mode: reuse the last warm idle H session if still available",
+    )
     parser.add_argument("--product", help="Catalog position, durable ID, or part number")
     parser.add_argument("--recipient", help="One-based address-book position")
     parser.add_argument("--interactive-product", action="store_true")
     parser.add_argument("--interactive-recipient", action="store_true")
     parser.add_argument("--no-reset", action="store_true")
+    parser.add_argument("--reset-only", action="store_true")
     parser.add_argument("--skip-add", action="store_true")
     parser.add_argument("--skip-checkout", action="store_true")
     parser.add_argument(
@@ -270,13 +343,34 @@ def main() -> None:
         action="store_true",
         help="Verify the expected public proxy IP before opening McMaster",
     )
+    parser.add_argument(
+        "--proxy", choices=("true", "false"), default="true"
+    )
+    parser.add_argument(
+        "--h-environment", "--environment", dest="h_environment"
+    )
     args = parser.parse_args()
 
-    do_add = not args.skip_add
-    do_checkout = not args.skip_checkout
-    do_reset = do_add and not args.no_reset
-    if not do_add and not do_checkout:
+    resume_pointer: dict[str, object] | None = None
+    if args.resume:
+        if args.proxy != "true":
+            parser.error(
+                "--proxy cannot change an existing warm session; omit it when using --resume"
+            )
+        try:
+            resume_pointer = consume_resume_pointer(LAST_SESSION_PATH)
+        except Exception as exc:
+            parser.error(f"cannot resume: {exc}")
+    else:
+        LAST_SESSION_PATH.unlink(missing_ok=True)
+
+    do_add = not args.skip_add and not args.reset_only
+    do_checkout = not args.skip_checkout and not args.reset_only
+    do_reset = args.reset_only or do_add and not args.no_reset
+    if not do_add and not do_checkout and not args.reset_only:
         parser.error("workflow must add a product, prepare checkout, or both")
+    if args.place_order and not do_checkout:
+        parser.error("--place-order requires checkout")
 
     catalog_path: Path | None = None
     product: dict[str, object] | None = None
@@ -366,6 +460,21 @@ def main() -> None:
     latest_image: dict[str, object] | None = None
     image_lock = Lock()
     captured_checkpoints: set[str] = set()
+    purchase_authorized = False
+    authorized_part_number: str | None = None
+    authorized_total: Decimal | None = None
+    context_parts = ["RESUME" if resume_pointer is not None else "NEW", "CART"]
+    if do_reset:
+        context_parts.append("RESET")
+    elif do_add:
+        context_parts.append("NORESET")
+    if do_add and part_number is not None:
+        context_parts.append(f"ADD {part_number}")
+    if do_checkout:
+        context_parts.append("CHECKOUT")
+    if args.place_order:
+        context_parts.append("PLACE ORDER")
+    workflow_context = "  ·  ".join(context_parts)
 
     def capture_checkout_checkpoint(checkpoint: str) -> str:
         """Save the current browser screenshot at a named checkout checkpoint."""
@@ -382,6 +491,12 @@ def main() -> None:
             raise RuntimeError("No browser screenshot is available for this checkpoint")
         path = artifact_dir / f"{demo_session_id}-{CHECKPOINTS[checkpoint]}.png"
         save_image(image, path)
+        stamp_provenance(
+            path,
+            demo_session_id=demo_session_id,
+            h_session_id=session.id,
+            context=f"{workflow_context}  ·  {checkpoint.upper()}",
+        )
         path.chmod(0o600)
         captured_checkpoints.add(checkpoint)
         record_timing(
@@ -395,6 +510,45 @@ def main() -> None:
         return f"Saved {checkpoint} checkpoint for {demo_session_id}"
 
     tools.append(capture_checkout_checkpoint)
+
+    if args.place_order:
+
+        def authorize_place_order(
+            visible_part_number: str,
+            visible_quantity: int,
+            visible_total_usd: float,
+        ) -> str:
+            """Authorize one Place Order click after validating visible order facts."""
+            nonlocal purchase_authorized, authorized_part_number, authorized_total
+            if purchase_authorized:
+                raise RuntimeError("Place Order was already authorized once")
+            normalized_part = visible_part_number.upper()
+            if part_number is not None and normalized_part != part_number.upper():
+                raise RuntimeError("Visible part number does not match selected product")
+            if visible_quantity != 1:
+                raise RuntimeError("Visible package quantity must be exactly 1")
+            total = Decimal(str(visible_total_usd))
+            if total <= 0 or total > Decimal(str(args.max_total)):
+                raise RuntimeError(
+                    f"Visible total is outside the authorized USD 0-{args.max_total:.2f} range"
+                )
+            purchase_authorized = True
+            authorized_part_number = normalized_part
+            authorized_total = total
+            record_timing(
+                "place-order-authorized",
+                part_number=normalized_part,
+                quantity=visible_quantity,
+                total_usd=float(total),
+            )
+            local_banner(
+                f"{demo_session_id}: AUTHORIZED ONE PLACE ORDER CLICK FOR "
+                f"{normalized_part} AT USD {total:.2f}",
+                LOCAL_SUCCESS,
+            )
+            return "AUTHORIZED: click Place Order exactly once, then verify confirmation"
+
+        tools.append(authorize_place_order)
     reader = ImapCodeReader.from_env()
     if reader is not None:
         local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP")
@@ -415,8 +569,7 @@ def main() -> None:
 
         tools.append(wait_for_email_2fa_code)
 
-    profile_id = newest_browser_profile_id(client)
-    environment_network = active_environment_network(client)
+    browser_runtime = HBrowserRuntime.resolve(client, args.h_environment)
     proxy_instruction = ""
     if args.verify_proxy:
         proxy_instruction = """
@@ -425,7 +578,7 @@ is exactly 54.71.20.137. If it differs, stop immediately with success=false and
 blocker="custom proxy egress verification failed". Do not expose proxy credentials.
 """.strip()
 
-    required_checkpoints: set[str] = set()
+    required_checkpoints: set[str] = {"initial-state"}
     if do_reset:
         required_checkpoints.add("cart-cleared")
         reset_instruction = """
@@ -449,11 +602,13 @@ order page. Verify the cart contains part {part_number} with quantity 1. If
 checkout is also requested, the cart must contain exactly this one line. Call
 capture_checkout_checkpoint(checkpoint="product-in-cart").
 """.strip()
-    else:
+    elif do_checkout:
         add_instruction = """
 Do not add or remove products. Verify the existing cart contains exactly one
 line item with quantity 1 and record its exact part number.
 """.strip()
+    else:
+        add_instruction = "Do not add any products after clearing the cart."
 
     if do_checkout:
         required_checkpoints.add("place-order-review")
@@ -472,11 +627,24 @@ Order review with the item, delivery summary, masked payment, totals, and green
 PLACE ORDER button visible. ABSOLUTELY DO NOT CLICK PLACE ORDER. Call
 capture_checkout_checkpoint(checkpoint="place-order-review") before answering.
 """.strip()
-        answer_instruction = """
+        if args.place_order:
+            required_checkpoints.add("order-confirmed")
+            answer_instruction = """
+PURCHASE IS EXPLICITLY ENABLED FOR THIS RUN. Only after saving the review
+checkpoint, call authorize_place_order with the exact visible part number,
+package quantity, and final numeric USD total. If authorization fails, stop.
+If it returns AUTHORIZED, click the green PLACE ORDER button exactly once. Wait
+for an explicit successful order confirmation and visible order number. Then
+call capture_checkout_checkpoint(checkpoint="order-confirmed"). Return
+place_order_clicked=true, order_confirmed=true, and the visible order number.
+Never retry or click PLACE ORDER a second time.
+""".strip()
+        else:
+            answer_instruction = """
 Return success=true only if PLACE ORDER is visible and untouched. Set
 place_order_clicked=false. payment_display may include only brand/last four.
 """.strip()
-    else:
+    elif do_add:
         checkout_instruction = """
 Stop after viewing and checkpointing the product in the cart. Do not fill
 delivery, billing, or payment fields and do not click PLACE ORDER.
@@ -485,29 +653,29 @@ delivery, billing, or payment fields and do not click PLACE ORDER.
 Return success=true after the requested cart state is visibly verified. Set
 place_order_visible=false and place_order_clicked=false.
 """.strip()
+    else:
+        checkout_instruction = """
+Stop after viewing and checkpointing the empty cart. Do not add products or
+fill delivery, billing, or payment fields and do not click PLACE ORDER.
+""".strip()
+        answer_instruction = """
+Return success=true after the empty cart is visibly verified. Return
+part_number=null, cart_quantity=0, place_order_visible=false, and
+place_order_clicked=false.
+""".strip()
 
-    session = client.start_session(
-        agent="h/web-surfer-pro",
-        overrides={
-            "agent.environments[kind=web].start_url": (
-                "https://api.ipify.org?format=json"
-                if args.verify_proxy
-                else "https://www.mcmaster.com/Order/"
-            ),
-            "agent.environments[kind=web].browser_profile_id": profile_id,
-            "agent.environments[kind=web].persist_browser_profile": True,
-            "agent.environments[kind=web].network": environment_network.model_dump(
-                mode="json", exclude_none=True
-            ),
-        },
-        answer_schema=CartResult,
-        tools=tools,
-        messages=f"""
+    workflow_message = f"""
 {proxy_instruction}
 
 This is ONE composable cart workflow session. If necessary, log in with email
 {email} and password {password}. Never echo credentials, address, or payment
 data. Use wait_for_email_2fa_code if requested. Confirm the account is David.
+
+INITIAL AUDIT — DO THIS BEFORE ANY OTHER BROWSER ACTION:
+Allow the current page to render, but do not navigate, click, type, clear the
+cart, or change any field. Immediately call
+capture_checkout_checkpoint(checkpoint="initial-state") to preserve the exact
+browser state inherited by this invocation, especially after --resume.
 
 RESET ACTION:
 {reset_instruction}
@@ -519,23 +687,65 @@ CHECKOUT ACTION:
 {checkout_instruction}
 
 {answer_instruction}
-""".strip(),
-        max_steps=45,
-        max_time_s=480,
-    )
+""".strip()
+    stream_from_index = 0
+    if resume_pointer is not None:
+        h_session_id = str(resume_pointer["h_session_id"])
+        try:
+            session = browser_runtime.attach_idle_session(client, h_session_id)
+        except RuntimeError as exc:
+            parser.error(f"cannot resume: {exc}")
+        event_page = client.sessions.list_session_events(
+            h_session_id, page=1, size=1
+        )
+        stream_from_index = event_page.total
+        session.send_message(workflow_message)
+        local_banner(
+            f"{demo_session_id}: RESUMED WARM H SESSION {h_session_id}",
+            LOCAL_SUCCESS,
+        )
+        record_timing(
+            "h-session-resumed",
+            h_session_id=h_session_id,
+            previous_demo_session_id=resume_pointer.get("demo_session_id"),
+        )
+    else:
+        session = browser_runtime.start_session(
+            client,
+            start_url=(
+                "https://api.ipify.org?format=json"
+                if args.verify_proxy
+                else "https://www.mcmaster.com/Order/"
+            ),
+            network={} if args.proxy == "false" else None,
+            answer_schema=CartResult,
+            tools=tools,
+            messages=workflow_message,
+            max_steps=45,
+            max_time_s=480,
+            idle_timeout_s=DEFAULT_IDLE_TIMEOUT_SECONDS,
+        )
     snapshot = session.get()
-    record_timing("h-session-created", h_session_id=session.id)
+    if resume_pointer is None:
+        record_timing("h-session-created", h_session_id=session.id)
     print(f"Demo session: {demo_session_id}", flush=True)
     print(f"H session: {session.id}", flush=True)
     print(f"H Agent View: {snapshot.agent_view_url}", flush=True)
-    local_banner("STREAMING ATOMIC CART-TO-REVIEW — PLACE ORDER IS FORBIDDEN")
+    local_banner(
+        "STREAMING COMPOSABLE CART WORKFLOW — PLACE ORDER IS EXPLICITLY ENABLED"
+        if args.place_order
+        else "STREAMING COMPOSABLE CART WORKFLOW — PLACE ORDER IS FORBIDDEN"
+    )
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             waiter = executor.submit(
-                session.wait_for_completion, timeout_seconds=510, tools=tools
+                session.wait_for_completion,
+                timeout_seconds=510,
+                tools=tools,
+                answer_schema=CartResult,
             )
-            for event in session.stream():
+            for event in session.stream(from_index=stream_from_index):
                 print_live_event(event)
                 payload = event.model_dump(mode="json")
                 data = payload.get("data") or {}
@@ -557,6 +767,12 @@ CHECKOUT ACTION:
         final_state_path = artifact_dir / f"{demo_session_id}-99-final-state.png"
         try:
             save_image(latest_image, final_state_path)
+            stamp_provenance(
+                final_state_path,
+                demo_session_id=demo_session_id,
+                h_session_id=session.id,
+                context=f"{workflow_context}  ·  FALLBACK FINAL STATE",
+            )
             final_state_path.chmod(0o600)
             local_banner(
                 f"{demo_session_id}: SAVED FALLBACK FINAL STATE TO {final_state_path.resolve()}",
@@ -587,22 +803,38 @@ CHECKOUT ACTION:
     product_matches = (
         not do_add
         or part_number is not None
+        and result.answer.part_number is not None
         and result.answer.part_number.upper() == part_number.upper()
     )
+    if args.place_order:
+        purchase_state_valid = (
+            purchase_authorized
+            and result.answer.place_order_clicked
+            and result.answer.order_confirmed
+            and bool(result.answer.order_number)
+            and result.answer.part_number is not None
+            and authorized_part_number == result.answer.part_number.upper()
+            and authorized_total == parsed_total
+        )
+    else:
+        purchase_state_valid = (
+            not result.answer.place_order_clicked
+            and (not do_checkout or result.answer.place_order_visible)
+            and not result.answer.order_confirmed
+        )
     checkout_valid = (
         not do_checkout
         or parsed_total is not None
         and parsed_total <= Decimal(str(args.max_total))
-        and result.answer.place_order_visible
+        and purchase_state_valid
     )
     run_succeeded = not (
         not result.answer.success
         or not result.answer.authenticated
         or "david" not in result.answer.account_indicator.casefold()
         or not product_matches
-        or result.answer.cart_quantity != 1
+        or result.answer.cart_quantity != (0 if args.reset_only else 1)
         or not checkout_valid
-        or result.answer.place_order_clicked
         or missing_checkpoints
     )
     record_timing(
@@ -610,6 +842,42 @@ CHECKOUT ACTION:
         outcome=str(result.outcome),
         success=run_succeeded,
     )
+    if run_succeeded:
+        final_status = str(session.status().status)
+        if final_status == "idle":
+            saved_at = datetime.now(UTC)
+            write_private_json(
+                LAST_SESSION_PATH,
+                {
+                    "h_session_id": session.id,
+                    "demo_session_id": demo_session_id,
+                    "saved_at": saved_at.isoformat(),
+                    "resumable_until": (
+                        saved_at + timedelta(seconds=MAX_RESUME_AGE_SECONDS)
+                    ).isoformat(),
+                    "idle_timeout_seconds": DEFAULT_IDLE_TIMEOUT_SECONDS,
+                    "phase": (
+                        "order-confirmed"
+                        if args.place_order
+                        else "place-order-review"
+                        if do_checkout
+                        else "cart-cleared"
+                        if args.reset_only
+                        else "product-in-cart"
+                    ),
+                    "agent_view_url": snapshot.agent_view_url,
+                },
+            )
+            local_banner(
+                f"{demo_session_id}: SAVED WARM H SESSION POINTER FOR --resume",
+                LOCAL_SUCCESS,
+            )
+        else:
+            LAST_SESSION_PATH.unlink(missing_ok=True)
+            local_banner(
+                f"{demo_session_id}: H SESSION ENDED AS {final_status!r}; NOT RESUMABLE",
+                LOCAL_FAILURE,
+            )
     if not run_succeeded:
         if missing_checkpoints:
             local_banner(

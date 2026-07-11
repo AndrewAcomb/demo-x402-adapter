@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from hai_agents import Client
 from pydantic import BaseModel, Field, model_validator
 
-from h_profile import active_environment_network, newest_browser_profile_id
+from h_browser_runtime import HBrowserRuntime
 from email_2fa import ImapCodeReader
 
 
@@ -227,6 +227,10 @@ def main() -> None:
         action="store_true",
         help="Use H's sticky US residential proxy if enabled for the organization",
     )
+    parser.add_argument("--proxy", choices=("true", "false"), default="true")
+    parser.add_argument(
+        "--h-environment", "--environment", dest="h_environment"
+    )
     args = parser.parse_args()
     enable_tee(args.log_file)
     if not os.environ.get("HAI_API_KEY"):
@@ -273,18 +277,14 @@ def main() -> None:
             "No email-code tool is configured. If email verification is required, "
             "stop and report that blocker."
         )
-    browser_profile_id = newest_browser_profile_id(client)
-    environment_network = active_environment_network(client)
-    overrides: dict[str, object] = {
-        "agent.environments[kind=web].start_url": START_URL,
-        "agent.environments[kind=web].browser_profile_id": browser_profile_id,
-        "agent.environments[kind=web].persist_browser_profile": True,
-        "agent.environments[kind=web].network": environment_network.model_dump(
-            mode="json", exclude_none=True
-        ),
-    }
+    browser_runtime = HBrowserRuntime.resolve(client, args.h_environment)
+    network_override: dict[str, object] | None = (
+        {} if args.proxy == "false" else None
+    )
     if args.us_egress:
-        overrides["agent.environments[kind=web].network"] = {
+        if args.proxy == "false":
+            parser.error("--us-egress conflicts with --proxy false")
+        network_override = {
             "managed_proxy": {
                 "pool": "residential",
                 "country": "US",
@@ -292,9 +292,10 @@ def main() -> None:
             }
         }
 
-    session = client.start_session(
-        agent="h/web-surfer-pro",
-        overrides=overrides,
+    session = browser_runtime.start_session(
+        client,
+        start_url=START_URL,
+        network=network_override,
         answer_schema=ScrewCatalog,
         tools=tools,
         messages=f"""

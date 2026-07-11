@@ -24,9 +24,14 @@ HELP = """Usage:
   ./h402 catalog list
   ./h402 cart reset
   ./h402 cart [reset|noreset] add <product-id|-i> [checkout <address-id|-i>]
-  ./h402 checkout <address-id|-i>
+      [--place-order] [--resume]
+  ./h402 checkout <address-id|-i> [--place-order] [--resume]
   ./h402 profile open|publish
   ./h402 logs [--local]
+
+Global browser options:
+  --proxy true|false          Use the configured proxy (default: true)
+  --h-environment env1        Configured H environment (default: profile state)
 
 Examples:
   ./h402 cart add -i
@@ -35,6 +40,8 @@ Examples:
   ./h402 cart reset add -i checkout -i
   ./h402 cart reset add 92224A112 checkout 1
   ./h402 cart noreset add 92224A112 checkout 1
+  ./h402 cart add 92224A112 checkout 1 --place-order
+  ./h402 cart noreset add 92224A112 --resume
 
 Adding resets the cart by default. Include `noreset` to opt out.
 """
@@ -60,6 +67,34 @@ def selector_argument(
     value: str, interactive_flag: str, value_flag: str
 ) -> list[str]:
     return [interactive_flag] if value == "-i" else [value_flag, value]
+
+
+def extract_browser_options(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Extract position-independent browser options into canonical argv form."""
+    cleaned: list[str] = []
+    extracted: dict[str, str] = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"--proxy", "--h-environment", "--environment"}:
+            canonical = "--h-environment" if token != "--proxy" else token
+            if canonical in extracted:
+                fail(f"{canonical} may be specified only once")
+            if index + 1 >= len(tokens):
+                fail(f"{token} requires a value")
+            value = tokens[index + 1]
+            if canonical == "--proxy" and value not in {"true", "false"}:
+                fail("--proxy must be true or false")
+            extracted[canonical] = value
+            index += 2
+        else:
+            cleaned.append(token)
+            index += 1
+    arguments: list[str] = []
+    for name in ("--proxy", "--h-environment"):
+        if name in extracted:
+            arguments.extend((name, extracted[name]))
+    return cleaned, arguments
 
 
 def parse_workflow(tokens: list[str]) -> None:
@@ -90,12 +125,12 @@ def parse_workflow(tokens: list[str]) -> None:
                     fail("checkout may appear only once")
                 recipient = value
             index += 2
-        elif token in {"--max-total"}:
+        elif token in {"--max-total", "--proxy", "--h-environment"}:
             if index + 1 >= len(tokens):
                 fail(f"{token} requires a value")
             passthrough.extend((token, tokens[index + 1]))
             index += 2
-        elif token == "--verify-proxy":
+        elif token in {"--verify-proxy", "--place-order", "--resume"}:
             passthrough.append(token)
             index += 1
         else:
@@ -105,10 +140,15 @@ def parse_workflow(tokens: list[str]) -> None:
         fail("reset and noreset are mutually exclusive")
     if product is None and recipient is None:
         if explicit_reset:
-            run_script("reset_cart.py", passthrough)
+            run_script(
+                "add_cached_to_cart.py",
+                [*passthrough, "--reset-only", "--skip-add", "--skip-checkout"],
+            )
         fail("cart requires reset, add, or checkout")
     if explicit_reset and product is None:
         fail("reset followed by checkout would empty the cart; add a product too")
+    if "--place-order" in passthrough and recipient is None:
+        fail("--place-order requires checkout <address-id|-i>")
     if product is not None and not any(
         (RUNTIME / "catalogs").glob("*-mcmaster-screws.json")
     ):
@@ -191,24 +231,45 @@ def doctor(online: bool) -> None:
 def main() -> None:
     ensure_runtime_layout()
     tokens = sys.argv[1:]
+    tokens, browser_options = extract_browser_options(tokens)
     if not tokens or tokens[0] in {"-h", "--help", "help"}:
         print(HELP)
         return
+    resume_count = tokens.count("--resume")
+    if resume_count > 1:
+        fail("--resume may be specified only once")
+    resume_requested = resume_count == 1
+    if resume_requested:
+        tokens = [token for token in tokens if token != "--resume"]
+        if not tokens:
+            fail("--resume must accompany a cart or checkout command")
     command, rest = tokens[0], tokens[1:]
     if command == "cart":
+        rest.extend(browser_options)
+        if resume_requested:
+            rest.append("--resume")
         parse_workflow(rest)
+        return
     elif command == "checkout":
         if not rest:
             fail("checkout requires one address ID or -i")
+        rest.extend(browser_options)
+        if resume_requested:
+            rest.append("--resume")
         parse_workflow(["checkout", *rest])
+        return
     elif command == "catalog":
         if rest == ["refresh"]:
-            run_script("prepare_purchase.py", [])
+            run_script("prepare_purchase.py", browser_options)
         elif rest == ["list"]:
+            if browser_options:
+                fail("browser options do not apply to catalog list")
             catalog_list()
         else:
             fail("catalog requires refresh or list")
     elif command == "profile":
+        if browser_options:
+            fail("browser options do not apply to profile management")
         if rest == ["open"]:
             run_script("h_profile.py", ["--open"])
         elif rest == ["publish"]:
@@ -216,10 +277,14 @@ def main() -> None:
         else:
             fail("profile requires open or publish")
     elif command == "doctor":
+        if browser_options:
+            fail("browser options do not apply to doctor")
         if rest not in ([], ["--online"]):
             fail("doctor accepts only --online")
         doctor(rest == ["--online"])
     elif command == "logs":
+        if browser_options:
+            fail("browser options do not apply to logs")
         if rest not in ([], ["--local"]):
             fail("logs accepts only --local")
         log_path = RUNTIME / "logs/fetch-products.log"
@@ -229,6 +294,9 @@ def main() -> None:
         raise SystemExit(subprocess.run(["tail", "-F", str(log_path)]).returncode)
     else:
         fail(f"unknown command {command!r}")
+
+    if resume_requested:
+        fail("--resume is supported only for cart and checkout workflows")
 
 
 if __name__ == "__main__":

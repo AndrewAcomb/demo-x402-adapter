@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from hai_agents import Client
-from hai_agents.types import BrowserNetwork
 
 
 ROOT = Path(__file__).resolve().parent
@@ -32,39 +31,6 @@ ENV_NAME_LINE = re.compile(r"^HAI_BROWSER_PROFILE_NAME=.*$", re.MULTILINE)
 
 def load_state() -> dict[str, object]:
     return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-
-
-def newest_browser_profile_id(client: Client, name: str | None = None) -> str:
-    state = load_state()
-    profile_name = name or str(state["active_profile_name"])
-    page = client.browser_profiles.list_browser_profiles(limit=100, offset=0)
-    matches = [profile for profile in page.profiles if profile.name == profile_name]
-    if not matches:
-        raise RuntimeError(f"No finalized H browser profile named {profile_name!r} was found")
-
-    newest = max(matches, key=lambda profile: profile.created_at)
-    print(
-        f"Using active H browser profile {profile_name!r}: "
-        f"{newest.id} (created {newest.created_at})",
-        flush=True,
-    )
-    return newest.id
-
-
-def active_environment_network(client: Client) -> BrowserNetwork:
-    """Return the tracked H environment's network config without logging secrets."""
-    state = load_state()
-    environment_id = str(state["environment_id"])
-    environment = client.environments.get_environment(environment_id)
-    if environment.kind != "web" or environment.network is None:
-        raise RuntimeError(f"H environment {environment_id!r} has no browser network config")
-    if environment.network.proxy_url:
-        print(f"Using custom proxy configured on H environment {environment_id!r}.", flush=True)
-    elif environment.network.managed_proxy:
-        print(f"Using managed proxy configured on H environment {environment_id!r}.", flush=True)
-    else:
-        raise RuntimeError(f"H environment {environment_id!r} has an empty network config")
-    return environment.network
 
 
 def open_chrome() -> None:
