@@ -27,6 +27,8 @@ START_URL = (
 PART_NUMBER_PATTERN = re.compile(r"^[A-Z0-9]+$")
 OUTPUT_NAME_PATTERN = re.compile(r"^(\d{3})-")
 CATALOG_SHORT_NAME = "mcmaster-screws"
+ROOT = Path(__file__).resolve().parent
+RUNTIME = ROOT / "runtime"
 RUNTIME_SECRETS: set[str] = set()
 LOCAL_BANNER = "\033[34m"
 LOCAL_SUCCESS = "\033[32m"
@@ -212,12 +214,12 @@ def main() -> None:
         description="Enumerate 10 inexpensive orderable screws from McMaster-Carr."
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("runtime/catalogs")
+        "--output-dir", type=Path, default=RUNTIME / "catalogs"
     )
     parser.add_argument(
         "--log-file",
         type=Path,
-        default=Path("runtime/logs/fetch-products.log"),
+        default=RUNTIME / "logs/fetch-products.log",
         help="Append terminal output here while also printing it live",
     )
     parser.add_argument(

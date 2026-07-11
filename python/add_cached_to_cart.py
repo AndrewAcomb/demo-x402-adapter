@@ -32,6 +32,10 @@ from prepare_purchase import (
 )
 
 
+ROOT = Path(__file__).resolve().parent
+RUNTIME = ROOT / "runtime"
+
+
 class CartResult(BaseModel):
     success: bool
     authenticated: bool
@@ -239,16 +243,16 @@ def main() -> None:
         description="Clear cart, add a cached SKU, fill checkout, and stop before Place Order."
     )
     parser.add_argument(
-        "--catalog-dir", type=Path, default=Path("runtime/catalogs")
+        "--catalog-dir", type=Path, default=RUNTIME / "catalogs"
     )
     parser.add_argument(
-        "--sessions-dir", type=Path, default=Path("runtime/sessions")
+        "--sessions-dir", type=Path, default=RUNTIME / "sessions"
     )
     parser.add_argument(
-        "--log-file", type=Path, default=Path("runtime/logs/fetch-products.log")
+        "--log-file", type=Path, default=RUNTIME / "logs/fetch-products.log"
     )
     parser.add_argument(
-        "--address-file", type=Path, default=Path("runtime/private/addresses.json")
+        "--address-file", type=Path, default=RUNTIME / "private/addresses.json"
     )
     parser.add_argument("--max-total", type=float, default=25.0)
     parser.add_argument("--product", help="Catalog position, durable ID, or part number")

@@ -25,6 +25,10 @@ from prepare_purchase import (
 )
 
 
+ROOT = Path(__file__).resolve().parent
+RUNTIME = ROOT / "runtime"
+
+
 class ResetResult(BaseModel):
     success: bool
     authenticated: bool
@@ -37,10 +41,10 @@ class ResetResult(BaseModel):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Empty the McMaster cart and stop.")
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("runtime/sessions")
+        "--output-dir", type=Path, default=RUNTIME / "sessions"
     )
     parser.add_argument(
-        "--log-file", type=Path, default=Path("runtime/logs/fetch-products.log")
+        "--log-file", type=Path, default=RUNTIME / "logs/fetch-products.log"
     )
     parser.add_argument(
         "--verify-proxy",

@@ -29,6 +29,9 @@ uv sync
 The checked-in `.envrc` is self-contained: when `uv` is installed it creates
 `.venv` on first load, activates it, adds a local `bin/` directory when present,
 and loads the ignored `.env`. It does not depend on personal direnv helpers.
+The `h402` CLI creates all ignored `runtime/` subdirectories automatically and
+anchors them to this Python project, regardless of the caller's current working
+directory.
 
 Create the ignored runtime tree and initialize the recipient address book on a
 fresh clone:

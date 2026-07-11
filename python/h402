@@ -15,6 +15,7 @@ from email_2fa import ImapCodeReader
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "runtime"
+RUNTIME_SUBDIRECTORIES = ("catalogs", "sessions", "logs", "private", "legacy")
 
 
 HELP = """Usage:
@@ -44,8 +45,15 @@ def fail(message: str) -> None:
 
 
 def run_script(name: str, arguments: list[str]) -> None:
-    completed = subprocess.run([sys.executable, str(ROOT / name), *arguments])
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / name), *arguments], cwd=ROOT
+    )
     raise SystemExit(completed.returncode)
+
+
+def ensure_runtime_layout() -> None:
+    for name in RUNTIME_SUBDIRECTORIES:
+        (RUNTIME / name).mkdir(parents=True, exist_ok=True)
 
 
 def selector_argument(
@@ -101,6 +109,10 @@ def parse_workflow(tokens: list[str]) -> None:
         fail("cart requires reset, add, or checkout")
     if explicit_reset and product is None:
         fail("reset followed by checkout would empty the cart; add a product too")
+    if product is not None and not any(
+        (RUNTIME / "catalogs").glob("*-mcmaster-screws.json")
+    ):
+        fail("no cached catalog; run `./h402 catalog refresh` first")
 
     arguments = passthrough
     if product is None:
@@ -122,7 +134,9 @@ def catalog_list() -> None:
     catalog_dir = RUNTIME / "catalogs"
     catalogs = sorted(catalog_dir.glob("*-mcmaster-screws.json"))
     if not catalogs:
-        raise SystemExit(f"No catalogs found under {catalog_dir}")
+        raise SystemExit(
+            f"No catalogs found under {catalog_dir}. Run `./h402 catalog refresh`."
+        )
     active = newest_catalog(catalog_dir)
     for path in reversed(catalogs):
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -175,6 +189,7 @@ def doctor(online: bool) -> None:
 
 
 def main() -> None:
+    ensure_runtime_layout()
     tokens = sys.argv[1:]
     if not tokens or tokens[0] in {"-h", "--help", "help"}:
         print(HELP)
