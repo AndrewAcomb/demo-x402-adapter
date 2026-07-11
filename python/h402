@@ -1,0 +1,220 @@
+#!/usr/bin/env python
+"""Operator CLI for the H browser fulfillment demo."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from add_cached_to_cart import AddressBook, describe_catalog, newest_catalog
+from email_2fa import ImapCodeReader
+
+
+ROOT = Path(__file__).resolve().parent
+RUNTIME = ROOT / "runtime"
+
+
+HELP = """Usage:
+  ./h402 doctor [--online]
+  ./h402 catalog refresh
+  ./h402 catalog list
+  ./h402 cart reset
+  ./h402 cart [reset|noreset] add <product-id|-i> [checkout <address-id|-i>]
+  ./h402 checkout <address-id|-i>
+  ./h402 profile open|publish
+  ./h402 logs [--local]
+
+Examples:
+  ./h402 cart add -i
+  ./h402 cart add mcmaster:92224A112
+  ./h402 checkout -i
+  ./h402 cart reset add -i checkout -i
+  ./h402 cart reset add 92224A112 checkout 1
+  ./h402 cart noreset add 92224A112 checkout 1
+
+Adding resets the cart by default. Include `noreset` to opt out.
+"""
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"h402: {message}\n\n{HELP}")
+
+
+def run_script(name: str, arguments: list[str]) -> None:
+    completed = subprocess.run([sys.executable, str(ROOT / name), *arguments])
+    raise SystemExit(completed.returncode)
+
+
+def selector_argument(
+    value: str, interactive_flag: str, value_flag: str
+) -> list[str]:
+    return [interactive_flag] if value == "-i" else [value_flag, value]
+
+
+def parse_workflow(tokens: list[str]) -> None:
+    explicit_reset = False
+    no_reset = False
+    product: str | None = None
+    recipient: str | None = None
+    passthrough: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "reset":
+            explicit_reset = True
+            index += 1
+        elif token == "noreset":
+            no_reset = True
+            index += 1
+        elif token in {"add", "checkout"}:
+            if index + 1 >= len(tokens):
+                fail(f"{token} requires an ID or -i")
+            value = tokens[index + 1]
+            if token == "add":
+                if product is not None:
+                    fail("add may appear only once")
+                product = value
+            else:
+                if recipient is not None:
+                    fail("checkout may appear only once")
+                recipient = value
+            index += 2
+        elif token in {"--max-total"}:
+            if index + 1 >= len(tokens):
+                fail(f"{token} requires a value")
+            passthrough.extend((token, tokens[index + 1]))
+            index += 2
+        elif token == "--verify-proxy":
+            passthrough.append(token)
+            index += 1
+        else:
+            fail(f"unexpected workflow token {token!r}")
+
+    if explicit_reset and no_reset:
+        fail("reset and noreset are mutually exclusive")
+    if product is None and recipient is None:
+        if explicit_reset:
+            run_script("reset_cart.py", passthrough)
+        fail("cart requires reset, add, or checkout")
+    if explicit_reset and product is None:
+        fail("reset followed by checkout would empty the cart; add a product too")
+
+    arguments = passthrough
+    if product is None:
+        arguments.extend(("--skip-add", "--no-reset"))
+    else:
+        arguments.extend(selector_argument(product, "--interactive-product", "--product"))
+        if no_reset:
+            arguments.append("--no-reset")
+    if recipient is None:
+        arguments.append("--skip-checkout")
+    else:
+        arguments.extend(
+            selector_argument(recipient, "--interactive-recipient", "--recipient")
+        )
+    run_script("add_cached_to_cart.py", arguments)
+
+
+def catalog_list() -> None:
+    catalog_dir = RUNTIME / "catalogs"
+    catalogs = sorted(catalog_dir.glob("*-mcmaster-screws.json"))
+    if not catalogs:
+        raise SystemExit(f"No catalogs found under {catalog_dir}")
+    active = newest_catalog(catalog_dir)
+    for path in reversed(catalogs):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        marker = "*" if path == active else " "
+        count = len(payload.get("products", []))
+        description = describe_catalog(path).replace("\nTimestamp: ", " — ")
+        print(f"{marker} {description} — {count} products")
+    print("\n* active catalog used by cart add")
+
+
+def doctor(online: bool) -> None:
+    required = [
+        "HAI_API_KEY",
+        "MCMASTER_EMAIL",
+        "MCMASTER_PASSWORD",
+        "CHECKOUT_CARD_NUMBER",
+        "CHECKOUT_CARD_EXP_MONTH",
+        "CHECKOUT_CARD_EXP_YEAR",
+        "CHECKOUT_CARD_CVV",
+    ]
+    missing = [name for name in required if not os.environ.get(name)]
+    checks = {
+        "environment variables": not missing,
+        "address book": (RUNTIME / "private/addresses.json").is_file(),
+        "catalog": any((RUNTIME / "catalogs").glob("*-mcmaster-screws.json")),
+        "profile state": (ROOT / "profile-state.json").is_file(),
+    }
+    if checks["address book"]:
+        try:
+            AddressBook.model_validate_json(
+                (RUNTIME / "private/addresses.json").read_text(encoding="utf-8")
+            )
+        except Exception:
+            checks["address book"] = False
+    if online:
+        reader = ImapCodeReader.from_env()
+        try:
+            if reader is None:
+                raise RuntimeError("IMAP is not configured")
+            reader.establish_baseline()
+            checks["IMAP connection"] = True
+        except Exception:
+            checks["IMAP connection"] = False
+    for label, ok in checks.items():
+        print(f"{'OK' if ok else 'FAIL':4}  {label}")
+    if missing:
+        print(f"Missing variable names: {', '.join(missing)}")
+    if not all(checks.values()):
+        raise SystemExit(1)
+
+
+def main() -> None:
+    tokens = sys.argv[1:]
+    if not tokens or tokens[0] in {"-h", "--help", "help"}:
+        print(HELP)
+        return
+    command, rest = tokens[0], tokens[1:]
+    if command == "cart":
+        parse_workflow(rest)
+    elif command == "checkout":
+        if not rest:
+            fail("checkout requires one address ID or -i")
+        parse_workflow(["checkout", *rest])
+    elif command == "catalog":
+        if rest == ["refresh"]:
+            run_script("prepare_purchase.py", [])
+        elif rest == ["list"]:
+            catalog_list()
+        else:
+            fail("catalog requires refresh or list")
+    elif command == "profile":
+        if rest == ["open"]:
+            run_script("h_profile.py", ["--open"])
+        elif rest == ["publish"]:
+            run_script("h_profile.py", [])
+        else:
+            fail("profile requires open or publish")
+    elif command == "doctor":
+        if rest not in ([], ["--online"]):
+            fail("doctor accepts only --online")
+        doctor(rest == ["--online"])
+    elif command == "logs":
+        if rest not in ([], ["--local"]):
+            fail("logs accepts only --local")
+        log_path = RUNTIME / "logs/fetch-products.log"
+        if rest == ["--local"]:
+            command_line = f"tail -F {log_path!s} | grep --line-buffered LLOCALL"
+            raise SystemExit(subprocess.run(["sh", "-c", command_line]).returncode)
+        raise SystemExit(subprocess.run(["tail", "-F", str(log_path)]).returncode)
+    else:
+        fail(f"unknown command {command!r}")
+
+
+if __name__ == "__main__":
+    main()

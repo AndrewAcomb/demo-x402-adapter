@@ -211,11 +211,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Enumerate 10 inexpensive orderable screws from McMaster-Carr."
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("out"))
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("runtime/catalogs")
+    )
     parser.add_argument(
         "--log-file",
         type=Path,
-        default=Path("logs/fetch-products.log"),
+        default=Path("runtime/logs/fetch-products.log"),
         help="Append terminal output here while also printing it live",
     )
     parser.add_argument(

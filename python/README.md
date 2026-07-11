@@ -26,6 +26,18 @@ direnv allow
 uv sync
 ```
 
+The checked-in `.envrc` is self-contained: when `uv` is installed it creates
+`.venv` on first load, activates it, adds a local `bin/` directory when present,
+and loads the ignored `.env`. It does not depend on personal direnv helpers.
+
+Create the ignored runtime tree and initialize the recipient address book on a
+fresh clone:
+
+```bash
+mkdir -p runtime/private
+cp addresses.example.json runtime/private/addresses.json
+```
+
 Alternatively, export a key directly:
 
 ```bash
@@ -64,31 +76,48 @@ Run catalog preparation:
 uv run python prepare_purchase.py
 ```
 
-The same live output is appended to `logs/fetch-products.log`. Follow it from
+The same live output is appended to `runtime/logs/fetch-products.log`. Follow it from
 another terminal with:
 
 ```bash
-tail -f logs/fetch-products.log
+tail -f runtime/logs/fetch-products.log
 ```
 
 Show only Mac-side callbacks in another terminal:
 
 ```bash
-tail -F logs/fetch-products.log | grep --line-buffered 'LLOCALL'
+tail -F runtime/logs/fetch-products.log | grep --line-buffered 'LLOCALL'
 ```
 
-The validated result is printed and saved under `out/`. Files are never
-overwritten and use a sequential number, UTC timestamp, and short catalog name:
+The validated result is printed and saved under `runtime/catalogs/`. Catalogs
+are immutable: files are never overwritten and use a sequential number, UTC
+timestamp, and short catalog name:
 
 ```text
-out/001-20260711T201530Z-mcmaster-screws.json
-out/002-20260711T204212Z-mcmaster-screws.json
+runtime/catalogs/001-20260711T201530Z-mcmaster-screws.json
+runtime/catalogs/002-20260711T204212Z-mcmaster-screws.json
 ```
 
 A later purchase step can accept one of the durable IDs and start a new,
 stateless browser run.
 
 ## Cart demo
+
+The ergonomic operator entry point is `h402`. Run `./h402 --help` for the full
+grammar. Examples:
+
+```bash
+./h402 doctor
+./h402 catalog list
+./h402 cart add -i
+./h402 checkout -i
+./h402 cart reset add -i checkout -i
+./h402 cart reset add mcmaster:92224A112 checkout 1
+./h402 cart noreset add 92224A112 checkout 1
+```
+
+`cart add` resets automatically. Add the literal `noreset` to opt out. Chained
+cart actions execute as one H browser session.
 
 Empty the authenticated McMaster cart, verify it is empty, save a screenshot,
 and stop:
@@ -99,7 +128,7 @@ uv run python reset_cart.py
 
 Then choose a part from the newest cached catalog using a numbered menu. In one
 H session the agent clears the cart, adds exactly one package, fills delivery
-and payment from `private/addresses.json` and `.env`, saves the final review
+and payment from `runtime/private/addresses.json` and `.env`, saves the final review
 screenshot, and stops with `Place Order` untouched:
 
 ```bash
@@ -115,7 +144,7 @@ normal runs skip that extra navigation.
 The interactive flow asks for the product first and then a recipient from the
 address book. The selected name/address is used for both delivery and billing;
 the card always comes from `.env`. Copy `addresses.example.json` to
-`private/addresses.json`, edit its recipient list, and use `--max-total` to set
+`runtime/private/addresses.json`, edit its recipient list, and use `--max-total` to set
 the fail-closed order ceiling (default: `$25.00` including shipping and tax).
 
 Each run atomically mints the next demo session ID (`S001` through `S999`) and
@@ -123,11 +152,11 @@ stores its artifacts in a matching directory. The agent captures three named
 checkpoints plus a structured result:
 
 ```text
-out/S001/S001-01-cart-cleared.png
-out/S001/S001-02-product-in-cart.png
-out/S001/S001-03-place-order-review.png
-out/S001/S001-result.json
-out/S001/S001-timing.jsonl
+runtime/sessions/S001/S001-01-cart-cleared.png
+runtime/sessions/S001/S001-02-product-in-cart.png
+runtime/sessions/S001/S001-03-place-order-review.png
+runtime/sessions/S001/S001-result.json
+runtime/sessions/S001/S001-timing.jsonl
 ```
 
 If a required checkpoint is missed, the run fails and saves

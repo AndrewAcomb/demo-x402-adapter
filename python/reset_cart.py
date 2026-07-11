@@ -36,8 +36,12 @@ class ResetResult(BaseModel):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Empty the McMaster cart and stop.")
-    parser.add_argument("--output-dir", type=Path, default=Path("out"))
-    parser.add_argument("--log-file", type=Path, default=Path("logs/fetch-products.log"))
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("runtime/sessions")
+    )
+    parser.add_argument(
+        "--log-file", type=Path, default=Path("runtime/logs/fetch-products.log")
+    )
     parser.add_argument(
         "--verify-proxy",
         action="store_true",

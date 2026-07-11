@@ -128,7 +128,19 @@ def mint_demo_session(output_dir: Path) -> tuple[str, Path]:
     raise RuntimeError("Demo session ID space S001 through S999 is exhausted")
 
 
-def choose_product(products: list[dict[str, object]], interactive: bool) -> dict[str, object]:
+def choose_product(
+    products: list[dict[str, object]], interactive: bool, selector: str | None = None
+) -> dict[str, object]:
+    if selector is not None:
+        normalized = selector.removeprefix("mcmaster:").upper()
+        if selector.isdigit() and 1 <= int(selector) <= len(products):
+            return products[int(selector) - 1]
+        for product in products:
+            if str(product["part_number"]).upper() == normalized:
+                return product
+            if str(product["durable_id"]).casefold() == selector.casefold():
+                return product
+        raise ValueError(f"Product {selector!r} is not in the newest catalog")
     if not interactive:
         return min(products, key=lambda item: float(item["package_price"]))
     print("\nProducts in newest cached catalog:\n")
@@ -146,8 +158,14 @@ def choose_product(products: list[dict[str, object]], interactive: bool) -> dict
 
 
 def choose_recipient(
-    recipients: list[ShippingAddress], interactive: bool
+    recipients: list[ShippingAddress], interactive: bool, selector: str | None = None
 ) -> ShippingAddress:
+    if selector is not None:
+        if selector.isdigit() and 1 <= int(selector) <= len(recipients):
+            return recipients[int(selector) - 1]
+        raise ValueError(
+            f"Recipient {selector!r} is invalid; use an address-book position"
+        )
     if not interactive:
         return recipients[0]
     print("\nRecipients in address book:\n")
@@ -220,12 +238,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Clear cart, add a cached SKU, fill checkout, and stop before Place Order."
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("out"))
-    parser.add_argument("--log-file", type=Path, default=Path("logs/fetch-products.log"))
     parser.add_argument(
-        "--address-file", type=Path, default=Path("private/addresses.json")
+        "--catalog-dir", type=Path, default=Path("runtime/catalogs")
+    )
+    parser.add_argument(
+        "--sessions-dir", type=Path, default=Path("runtime/sessions")
+    )
+    parser.add_argument(
+        "--log-file", type=Path, default=Path("runtime/logs/fetch-products.log")
+    )
+    parser.add_argument(
+        "--address-file", type=Path, default=Path("runtime/private/addresses.json")
     )
     parser.add_argument("--max-total", type=float, default=25.0)
+    parser.add_argument("--product", help="Catalog position, durable ID, or part number")
+    parser.add_argument("--recipient", help="One-based address-book position")
+    parser.add_argument("--interactive-product", action="store_true")
+    parser.add_argument("--interactive-recipient", action="store_true")
+    parser.add_argument("--no-reset", action="store_true")
+    parser.add_argument("--skip-add", action="store_true")
+    parser.add_argument("--skip-checkout", action="store_true")
     parser.add_argument(
         "-i", "--interactive", action="store_true", help="Choose a SKU from a numbered menu"
     )
@@ -236,19 +268,44 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    catalog_path = newest_catalog(args.output_dir)
-    print(f"\n{describe_catalog(catalog_path)}", flush=True)
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    product = choose_product(catalog["products"], args.interactive)
-    address_book = AddressBook.model_validate_json(
-        args.address_file.read_text(encoding="utf-8")
-    )
-    address = choose_recipient(address_book.recipients, args.interactive)
-    address_payload = address.model_dump(mode="json")
-    for value in address_payload.values():
-        if isinstance(value, str) and len(value) >= 5 and value != address.recipient_name:
-            RUNTIME_SECRETS.add(value)
-    demo_session_id, artifact_dir = mint_demo_session(args.output_dir)
+    do_add = not args.skip_add
+    do_checkout = not args.skip_checkout
+    do_reset = do_add and not args.no_reset
+    if not do_add and not do_checkout:
+        parser.error("workflow must add a product, prepare checkout, or both")
+
+    catalog_path: Path | None = None
+    product: dict[str, object] | None = None
+    if do_add:
+        catalog_path = newest_catalog(args.catalog_dir)
+        print(f"\n{describe_catalog(catalog_path)}", flush=True)
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        product = choose_product(
+            catalog["products"],
+            args.interactive or args.interactive_product,
+            args.product,
+        )
+
+    address: ShippingAddress | None = None
+    address_payload: dict[str, object] = {}
+    if do_checkout:
+        address_book = AddressBook.model_validate_json(
+            args.address_file.read_text(encoding="utf-8")
+        )
+        address = choose_recipient(
+            address_book.recipients,
+            args.interactive or args.interactive_recipient,
+            args.recipient,
+        )
+        address_payload = address.model_dump(mode="json")
+        for value in address_payload.values():
+            if (
+                isinstance(value, str)
+                and len(value) >= 5
+                and value != address.recipient_name
+            ):
+                RUNTIME_SECRETS.add(value)
+    demo_session_id, artifact_dir = mint_demo_session(args.sessions_dir)
     timing_path = artifact_dir / f"{demo_session_id}-timing.jsonl"
     timing_lock = Lock()
     flow_started_monotonic = time.monotonic()
@@ -269,31 +326,36 @@ def main() -> None:
 
     record_timing("run-started")
     enable_tee(args.log_file)
-    part_number = product["part_number"]
-    start_url = product["url"]
-    local_banner(
-        f"{demo_session_id}: USING CACHE {catalog_path.name}; SELECTED {part_number} AT "
-        f"{product['currency']} {product['package_price']:.2f}"
-    )
+    part_number = str(product["part_number"]) if product is not None else None
+    start_url = str(product["url"]) if product is not None else None
+    if product is not None and catalog_path is not None:
+        local_banner(
+            f"{demo_session_id}: USING CACHE {catalog_path.name}; SELECTED {part_number} AT "
+            f"{product['currency']} {product['package_price']:.2f}"
+        )
     local_banner(f"{demo_session_id}: ARTIFACTS WILL BE SAVED UNDER {artifact_dir.resolve()}")
 
     email = os.environ.get("MCMASTER_EMAIL")
     password = os.environ.get("MCMASTER_PASSWORD")
     if not email or not password:
         parser.error("MCMASTER_EMAIL and MCMASTER_PASSWORD must be set")
-    payment_names = (
-        "CHECKOUT_CARD_NUMBER",
-        "CHECKOUT_CARD_EXP_MONTH",
-        "CHECKOUT_CARD_EXP_YEAR",
-        "CHECKOUT_CARD_CVV",
-    )
-    payment = {name: os.environ.get(name) for name in payment_names}
-    missing = [name for name, value in payment.items() if not value]
-    if missing:
-        parser.error(f"Missing checkout variables in .env: {', '.join(missing)}")
-    RUNTIME_SECRETS.add(str(payment["CHECKOUT_CARD_NUMBER"]))
-    RUNTIME_SECRETS.add(str(payment["CHECKOUT_CARD_CVV"]))
-    card_name = os.environ.get("CHECKOUT_CARD_NAME", address.recipient_name)
+    payment: dict[str, str | None] = {}
+    card_name = ""
+    if do_checkout:
+        payment_names = (
+            "CHECKOUT_CARD_NUMBER",
+            "CHECKOUT_CARD_EXP_MONTH",
+            "CHECKOUT_CARD_EXP_YEAR",
+            "CHECKOUT_CARD_CVV",
+        )
+        payment = {name: os.environ.get(name) for name in payment_names}
+        missing = [name for name, value in payment.items() if not value]
+        if missing:
+            parser.error(f"Missing checkout variables in .env: {', '.join(missing)}")
+        RUNTIME_SECRETS.add(str(payment["CHECKOUT_CARD_NUMBER"]))
+        RUNTIME_SECRETS.add(str(payment["CHECKOUT_CARD_CVV"]))
+        assert address is not None
+        card_name = os.environ.get("CHECKOUT_CARD_NAME", address.recipient_name)
 
     client = Client()
     tools = []
@@ -358,6 +420,68 @@ First inspect the JSON at the current api.ipify.org page. Confirm its public IP
 is exactly 54.71.20.137. If it differs, stop immediately with success=false and
 blocker="custom proxy egress verification failed". Do not expose proxy credentials.
 """.strip()
+
+    required_checkpoints: set[str] = set()
+    if do_reset:
+        required_checkpoints.add("cart-cleared")
+        reset_instruction = """
+Go to https://www.mcmaster.com/Order/ and DELETE EVERY existing line item.
+Continue until the cart is visibly empty, then call
+capture_checkout_checkpoint(checkpoint="cart-cleared").
+""".strip()
+    else:
+        reset_instruction = (
+            "Do not clear or delete the existing cart. This workflow explicitly disabled reset."
+        )
+
+    if do_add:
+        assert product is not None and start_url is not None and part_number is not None
+        required_checkpoints.add("product-in-cart")
+        add_instruction = f"""
+Open only the direct cached URL {start_url} for durable part {part_number}:
+{product['description']}. Do not search or browse other products. Verify the
+page is exactly part {part_number}, add exactly one package, then return to the
+order page. Verify the cart contains part {part_number} with quantity 1. If
+checkout is also requested, the cart must contain exactly this one line. Call
+capture_checkout_checkpoint(checkpoint="product-in-cart").
+""".strip()
+    else:
+        add_instruction = """
+Do not add or remove products. Verify the existing cart contains exactly one
+line item with quantity 1 and record its exact part number.
+""".strip()
+
+    if do_checkout:
+        required_checkpoints.add("place-order-review")
+        checkout_instruction = f"""
+Fill delivery details exactly as follows:
+{json.dumps(address_payload)}
+Use standard delivery and use the selected recipient name and delivery address
+for billing too. Fill payment with card number
+{payment['CHECKOUT_CARD_NUMBER']}, expiration
+{payment['CHECKOUT_CARD_EXP_MONTH']}/{payment['CHECKOUT_CARD_EXP_YEAR']}, CVV
+{payment['CHECKOUT_CARD_CVV']}, and cardholder name {card_name}.
+
+Let shipping, tax, and total recalculate. If total exceeds USD
+{args.max_total:.2f}, return success=false and stop. The target is the Current
+Order review with the item, delivery summary, masked payment, totals, and green
+PLACE ORDER button visible. ABSOLUTELY DO NOT CLICK PLACE ORDER. Call
+capture_checkout_checkpoint(checkpoint="place-order-review") before answering.
+""".strip()
+        answer_instruction = """
+Return success=true only if PLACE ORDER is visible and untouched. Set
+place_order_clicked=false. payment_display may include only brand/last four.
+""".strip()
+    else:
+        checkout_instruction = """
+Stop after viewing and checkpointing the product in the cart. Do not fill
+delivery, billing, or payment fields and do not click PLACE ORDER.
+""".strip()
+        answer_instruction = """
+Return success=true after the requested cart state is visibly verified. Set
+place_order_visible=false and place_order_clicked=false.
+""".strip()
+
     session = client.start_session(
         agent="h/web-surfer-pro",
         overrides={
@@ -377,36 +501,20 @@ blocker="custom proxy egress verification failed". Do not expose proxy credentia
         messages=f"""
 {proxy_instruction}
 
-This is ONE atomic cart-to-review session. If necessary, log in with email
+This is ONE composable cart workflow session. If necessary, log in with email
 {email} and password {password}. Never echo credentials, address, or payment
 data. Use wait_for_email_2fa_code if requested. Confirm the account is David.
 
-1. Go to https://www.mcmaster.com/Order/ and DELETE EVERY existing line item.
-   Continue until the cart is visibly empty. Once the empty cart is visibly
-   confirmed, call capture_checkout_checkpoint(checkpoint="cart-cleared").
-2. Open only the direct cached URL {start_url} for durable part {part_number}:
-   {product['description']}. Do not search or browse other products.
-3. Verify the page is exactly part {part_number}, add exactly one package, then
-   return to the order page. Verify the cart now contains exactly one line,
-   part {part_number}, quantity 1. Then call
-   capture_checkout_checkpoint(checkpoint="product-in-cart").
-4. Fill delivery details exactly as follows:
-   {json.dumps(address_payload)}
-5. Use standard delivery and use the selected recipient name and delivery
-   address for billing too. Fill payment with card number {payment['CHECKOUT_CARD_NUMBER']},
-   expiration {payment['CHECKOUT_CARD_EXP_MONTH']}/{payment['CHECKOUT_CARD_EXP_YEAR']},
-   CVV {payment['CHECKOUT_CARD_CVV']}, and cardholder name {card_name}.
-6. Let shipping, tax, and total recalculate. If total exceeds USD
-   {args.max_total:.2f}, return success=false and stop.
+RESET ACTION:
+{reset_instruction}
 
-TARGET: Current Order review visibly shows exactly the selected item, delivery
-summary, masked payment, totals, and the green PLACE ORDER button. STOP THERE.
-ABSOLUTELY DO NOT CLICK PLACE ORDER. Do not submit or purchase anything.
-After visually confirming this target state, call
-capture_checkout_checkpoint(checkpoint="place-order-review") before answering.
+ADD ACTION:
+{add_instruction}
 
-Return success=true only if PLACE ORDER is visible and untouched. Set
-place_order_clicked=false. payment_display may include only brand/last four.
+CHECKOUT ACTION:
+{checkout_instruction}
+
+{answer_instruction}
 """.strip(),
         max_steps=45,
         max_time_s=480,
@@ -440,7 +548,7 @@ place_order_clicked=false. payment_display may include only brand/last four.
         )
         raise
 
-    missing_checkpoints = set(CHECKPOINTS) - captured_checkpoints
+    missing_checkpoints = required_checkpoints - captured_checkpoints
     if missing_checkpoints and latest_image is not None:
         final_state_path = artifact_dir / f"{demo_session_id}-99-final-state.png"
         try:
@@ -472,16 +580,25 @@ place_order_clicked=false. payment_display may include only brand/last four.
     result_path.chmod(0o600)
     print(json.dumps(output, indent=2), flush=True)
     parsed_total = parse_usd(result.answer.order_total)
+    product_matches = (
+        not do_add
+        or part_number is not None
+        and result.answer.part_number.upper() == part_number.upper()
+    )
+    checkout_valid = (
+        not do_checkout
+        or parsed_total is not None
+        and parsed_total <= Decimal(str(args.max_total))
+        and result.answer.place_order_visible
+    )
     run_succeeded = not (
         not result.answer.success
         or not result.answer.authenticated
         or "david" not in result.answer.account_indicator.casefold()
-        or result.answer.part_number.upper() != str(part_number).upper()
+        or not product_matches
         or result.answer.cart_quantity != 1
-        or parsed_total is None
-        or parsed_total > Decimal(str(args.max_total))
+        or not checkout_valid
         or result.answer.place_order_clicked
-        or not result.answer.place_order_visible
         or missing_checkpoints
     )
     record_timing(

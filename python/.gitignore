@@ -2,9 +2,7 @@
 .idea/
 .venv/
 catalog.json
-out/
-logs/
-private/
+runtime/
 log[0-9]*
 demo-x402-adapter/
 hackathon-chrome-profile.zip
