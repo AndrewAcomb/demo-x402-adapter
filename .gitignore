@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# project-specific
+.env
+.env.local
+node_modules/
+dist/
+.vercel
