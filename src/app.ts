@@ -99,9 +99,13 @@ app.use(
           network: NETWORK,
           payTo: PAY_TO,
         },
-        description: 'Buy a product from the vitamins adapter and queue it for fulfillment.',
-        serviceName: 'BuyWith402 Vitamins',
-        tags: ['vitamins', 'supplements', 'physical-goods', 'commerce'],
+        description:
+          'BuyWith402 (buywith402.com): buy any product from the catalog with one x402 ' +
+          'USDC payment and get an order id with queued fulfillment. Browse products free ' +
+          'at GET /products; check status at GET /orders/{order_id}.',
+        serviceName: 'BuyWith402',
+        // Max 5 tags (32 chars each) — extras are dropped by sanitizeTags.
+        tags: ['commerce', 'shopping', 'physical', 'hardware', 'marketplace'],
         // Opt in to x402 Bazaar discovery: tells agents how to call this
         // endpoint (body shape mirrors PurchaseBody in schemas.ts). Browse
         // free endpoints: GET /products lists ids, GET /orders/:id status.
@@ -145,10 +149,10 @@ app.use(
             output: {
               example: {
                 order_id: '5461d889-dac7-456b-846f-3332a2929104',
-                product_id: 'vit-d-30',
+                product_id: 'example-product-id',
                 quantity: 1,
                 status: 'queued',
-                message: 'Payment received. Fulfillment queued for Vitamin D3 2000 IU (30 softgels).',
+                message: 'Payment received. Fulfillment queued.',
               },
             },
           }),
