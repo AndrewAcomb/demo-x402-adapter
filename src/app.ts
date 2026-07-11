@@ -13,6 +13,7 @@ import type { Network } from '@x402/core/types';
 import { HTTPFacilitatorClient } from '@x402/core/server';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { createFacilitatorConfig } from '@coinbase/x402';
+import { declareDiscoveryExtension } from '@x402/extensions/bazaar';
 
 import { getProduct, listProducts } from './catalog.js';
 import { PurchaseBody, type OrderResponse } from './schemas.js';
@@ -99,6 +100,59 @@ app.use(
           payTo: PAY_TO,
         },
         description: 'Buy a product from the vitamins adapter and queue it for fulfillment.',
+        serviceName: 'BuyWith402 Vitamins',
+        tags: ['vitamins', 'supplements', 'physical-goods', 'commerce'],
+        // Opt in to x402 Bazaar discovery: tells agents how to call this
+        // endpoint (body shape mirrors PurchaseBody in schemas.ts). Browse
+        // free endpoints: GET /products lists ids, GET /orders/:id status.
+        // NOTE: declareDiscoveryExtension already returns `{ bazaar: ... }`.
+        extensions: {
+          ...declareDiscoveryExtension({
+            bodyType: 'json',
+            input: {
+              quantity: 1,
+              email: 'buyer@example.com',
+              shipping: {
+                name: 'Jane Doe',
+                address_1: '123 Main St',
+                city: 'San Francisco',
+                state: 'CA',
+                zip: '94114',
+                country: 'US',
+              },
+            },
+            inputSchema: {
+              properties: {
+                quantity: { type: 'integer', minimum: 1, maximum: 12 },
+                email: { type: 'string' },
+                shipping: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string' },
+                    address_1: { type: 'string' },
+                    address_2: { type: 'string' },
+                    city: { type: 'string' },
+                    state: { type: 'string' },
+                    zip: { type: 'string' },
+                    country: { type: 'string' },
+                  },
+                  required: ['name', 'address_1', 'city', 'state', 'zip'],
+                },
+                gift_note: { type: 'string' },
+              },
+              required: ['shipping'],
+            },
+            output: {
+              example: {
+                order_id: '5461d889-dac7-456b-846f-3332a2929104',
+                product_id: 'vit-d-30',
+                quantity: 1,
+                status: 'queued',
+                message: 'Payment received. Fulfillment queued for Vitamin D3 2000 IU (30 softgels).',
+              },
+            },
+          }),
+        },
       },
     },
     resourceServer,
