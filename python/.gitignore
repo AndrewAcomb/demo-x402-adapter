@@ -1,0 +1,14 @@
+.env
+.idea/
+.venv/
+catalog.json
+out/
+logs/
+private/
+log[0-9]*
+demo-x402-adapter/
+hackathon-chrome-profile.zip
+hackathon-firefox-profile.zip
+hackathon-chrome-user-data.zip
+__pycache__/
+*.pyc

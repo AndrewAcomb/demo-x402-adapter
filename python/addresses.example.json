@@ -1,0 +1,28 @@
+{
+  "recipients": [
+    {
+      "recipient_name": "Ada Example",
+      "company": "",
+      "street1": "123 Example Street",
+      "street2": "Apt 4",
+      "city": "San Francisco",
+      "state": "CA",
+      "postal_code": "94114",
+      "country": "US",
+      "email": "",
+      "phone": ""
+    },
+    {
+      "recipient_name": "Grace Example",
+      "company": "Example Workshop",
+      "street1": "456 Demo Avenue",
+      "street2": "",
+      "city": "Oakland",
+      "state": "CA",
+      "postal_code": "94612",
+      "country": "US",
+      "email": "",
+      "phone": ""
+    }
+  ]
+}

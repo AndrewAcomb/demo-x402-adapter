@@ -1,0 +1,170 @@
+# McMaster-Carr H hosted-browser demo
+
+The first demo step asks H's `h/web-surfer-pro` agent to browse McMaster-Carr
+and produce a validated catalog of exactly ten inexpensive, orderable screw
+SKUs. Each product receives a stable durable ID such as
+`mcmaster:91251A541`.
+
+The browser script loads the active, confirmed profile recorded in
+`profile-state.json` and persists its final cookies and storage.
+
+The script only browses product tables. It does not add anything to an order,
+sign in, or enter checkout.
+
+Every run first checks the account indicator at the top-right of McMaster-Carr.
+It must visibly contain `David`. If it shows `Log in`, another identity, or an
+unreadable state, the agent stops immediately and the script exits without
+writing a catalog.
+
+## Setup
+
+The project uses direnv to activate its virtual environment and load the local,
+git-ignored `.env` file. Approve it once, then install the project:
+
+```bash
+direnv allow
+uv sync
+```
+
+Alternatively, export a key directly:
+
+```bash
+export HAI_API_KEY="hk-..."
+```
+
+Add the throwaway McMaster credentials to the ignored `.env` file:
+
+```bash
+MCMASTER_EMAIL="demo@example.com"
+MCMASTER_PASSWORD="demo-password"
+```
+
+When a run sees `Log in`, it signs in and requires the account indicator to
+change to `David` before catalog work. Credentials are redacted from terminal
+and tee logs, but are sent to H's hosted model/runtime as part of the task.
+
+For email 2FA, configure a private IMAP mailbox in `.env`:
+
+```bash
+EMAIL_IMAP_HOST="imap.example.com"
+EMAIL_IMAP_PORT="993"
+EMAIL_IMAP_USERNAME="buyer@buywith402.com"
+EMAIL_IMAP_PASSWORD="mailbox-password-or-app-password"
+EMAIL_IMAP_FOLDER="INBOX"
+EMAIL_2FA_SENDER_FILTER="mcmaster"
+```
+
+At run start the script records the latest existing message UID. If McMaster
+requests email verification, the local tool waits only for newer matching
+messages and extracts a 4–10 character code. Codes are redacted from tee logs.
+
+Run catalog preparation:
+
+```bash
+uv run python prepare_purchase.py
+```
+
+The same live output is appended to `logs/fetch-products.log`. Follow it from
+another terminal with:
+
+```bash
+tail -f logs/fetch-products.log
+```
+
+Show only Mac-side callbacks in another terminal:
+
+```bash
+tail -F logs/fetch-products.log | grep --line-buffered 'LLOCALL'
+```
+
+The validated result is printed and saved under `out/`. Files are never
+overwritten and use a sequential number, UTC timestamp, and short catalog name:
+
+```text
+out/001-20260711T201530Z-mcmaster-screws.json
+out/002-20260711T204212Z-mcmaster-screws.json
+```
+
+A later purchase step can accept one of the durable IDs and start a new,
+stateless browser run.
+
+## Cart demo
+
+Empty the authenticated McMaster cart, verify it is empty, save a screenshot,
+and stop:
+
+```bash
+uv run python reset_cart.py
+```
+
+Then choose a part from the newest cached catalog using a numbered menu. In one
+H session the agent clears the cart, adds exactly one package, fills delivery
+and payment from `private/addresses.json` and `.env`, saves the final review
+screenshot, and stops with `Place Order` untouched:
+
+```bash
+uv run python add_cached_to_cart.py --interactive
+```
+
+Without `--interactive` (or `-i`), the add command selects the cheapest cached
+part automatically. Both cart commands copy the custom proxy configuration
+from the H environment recorded in `profile-state.json` into the new browser
+session. Add `--verify-proxy` when you want to check its public egress IP;
+normal runs skip that extra navigation.
+
+The interactive flow asks for the product first and then a recipient from the
+address book. The selected name/address is used for both delivery and billing;
+the card always comes from `.env`. Copy `addresses.example.json` to
+`private/addresses.json`, edit its recipient list, and use `--max-total` to set
+the fail-closed order ceiling (default: `$25.00` including shipping and tax).
+
+Each run atomically mints the next demo session ID (`S001` through `S999`) and
+stores its artifacts in a matching directory. The agent captures three named
+checkpoints plus a structured result:
+
+```text
+out/S001/S001-01-cart-cleared.png
+out/S001/S001-02-product-in-cart.png
+out/S001/S001-03-place-order-review.png
+out/S001/S001-result.json
+out/S001/S001-timing.jsonl
+```
+
+If a required checkpoint is missed, the run fails and saves
+`S001-99-final-state.png` as diagnostic evidence when possible.
+The timing file is append-only JSONL: one flat line per event with monotonic
+elapsed seconds relative to the start of that demo run.
+
+When managed proxies are enabled for the H organization, request sticky US
+residential egress with:
+
+```bash
+uv run python prepare_purchase.py --us-egress
+```
+
+## Refresh the uploaded browser profile
+
+Open the local Chrome profile named `hackathon` (`Profile 7`) for login and
+cookie setup:
+
+```bash
+uv run python h_profile.py --open
+```
+
+After preparing any merchant login or cookie state needed for the demo, publish
+the next two-digit H profile version with:
+
+```bash
+uv run python h_profile.py
+```
+
+The command briefly quits Chrome, packages `Profile 7` as `Default/` together
+with Chrome's `Local State`, and rebuilds `hackathon-chrome-user-data.zip`,
+chooses the next available name (`hackathon01`, `hackathon02`, ...), uploads and
+completes it, pauses to confirm it through H's list API, and only then switches
+the active pointer. It also patches the owned H environment recorded in
+`profile-state.json` to the new profile UUID and enables profile persistence.
+Older profiles remain available as rollback copies.
+
+`profile-state.json` is the git-trackable source of truth for the active name,
+UUID, version, and confirmation time. Failed uploads never change it.
