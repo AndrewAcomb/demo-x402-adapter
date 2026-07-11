@@ -287,7 +287,7 @@ def main() -> None:
             fail("browser options do not apply to logs")
         if rest not in ([], ["--local"]):
             fail("logs accepts only --local")
-        log_path = RUNTIME / "logs/fetch-products.log"
+        log_path = RUNTIME / "logs/app.log"
         if rest == ["--local"]:
             command_line = f"tail -F {log_path!s} | grep --line-buffered LLOCALL"
             raise SystemExit(subprocess.run(["sh", "-c", command_line]).returncode)

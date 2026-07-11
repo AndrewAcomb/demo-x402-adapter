@@ -92,18 +92,32 @@ Run catalog preparation:
 uv run python prepare_purchase.py
 ```
 
-The same live output is appended to `runtime/logs/fetch-products.log`. Follow it from
+The same live output is appended to `runtime/logs/app.log`. Follow it from
 another terminal with:
 
 ```bash
-tail -f runtime/logs/fetch-products.log
+tail -f runtime/logs/app.log
 ```
 
 Show only Mac-side callbacks in another terminal:
 
 ```bash
-tail -F runtime/logs/fetch-products.log | grep --line-buffered 'LLOCALL'
+tail -F runtime/logs/app.log | grep --line-buffered 'LLOCALL'
 ```
+
+New workflow output uses fixed-width structured logging while preserving the
+existing message text:
+
+```text
+2026-07-11 17:42:03.184  S001  R002                  HHStream - [agent] ...
+2026-07-11 17:42:03.221  S001  R002                Screenshot - SAVED CHECKPOINT ...
+2026-07-11 17:42:03.250  S001  R002                  CartFlow - LOCAL MAC: ...
+```
+
+All live H event-stream text uses the static `HHStream` component. Local call
+sites use stable components such as `Catalog`, `AddCart`, `CartFlow`,
+`Purchase`, `Resume`, `Email2FA`, `Screenshot`, `HRuntime`, `Error`, and
+`Application`. The component column is right-justified.
 
 The validated result is printed and saved under `runtime/catalogs/`. Catalogs
 are immutable: files are never overwritten and use a sequential number, UTC
@@ -187,27 +201,30 @@ the card always comes from `.env`. Copy `addresses.example.json` to
 `runtime/private/addresses.json`, edit its recipient list, and use `--max-total` to set
 the fail-closed order ceiling (default: `$50.00` including shipping and tax).
 
-Each run atomically mints the next demo session ID (`S001` through `S999`) and
-stores its artifacts in a matching directory. The agent captures three named
-checkpoints plus a structured result:
+Each new H session lineage atomically mints the next demo session ID (`S001`
+through `S999`) and stores its artifacts in a matching directory. The agent
+captures the checkpoints applicable to the requested workflow plus a structured
+result:
 
 ```text
-runtime/sessions/S001/S001-01-cart-cleared.png
-runtime/sessions/S001/S001-02-product-in-cart.png
-runtime/sessions/S001/S001-03-place-order-review.png
-runtime/sessions/S001/S001-result.json
-runtime/sessions/S001/S001-timing.jsonl
+runtime/sessions/S001/S001-R001-01-cart-cleared.png
+runtime/sessions/S001/S001-R001-02-product-in-cart.png
+runtime/sessions/S001/S001-R001-03-place-order-review.png
+runtime/sessions/S001/S001-R001-result.json
+runtime/sessions/S001/S001-R001-timing.jsonl
 ```
 
 Every cart/checkout/reset invocation first captures
-`S001-00-initial-state.png` before changing the browser. This is especially
-useful for resumed sessions. Every workflow PNG receives a dark provenance
-footer with local timestamp/timezone, demo session ID, H session ID, action
-context, and checkpoint name. Each image checkpoint also creates a flat timing
-event in `S001-timing.jsonl`.
+`S001-R001-00-initial-state.png` before changing the browser. This is especially
+useful for resumed sessions. Every workflow PNG receives a dark-grey provenance
+header above the unchanged browser pixels, with local timestamp/timezone, demo
+session ID, H session ID, action context, and checkpoint name. Each image checkpoint also creates a flat timing
+event in `S001-R001-timing.jsonl`. `S001` identifies the warm H session lineage;
+the first request is `R001`, and each successful `--resume` reuses the same
+session directory while incrementing to `R002`, `R003`, and so on.
 
 If a required checkpoint is missed, the run fails and saves
-`S001-99-final-state.png` as diagnostic evidence when possible.
+`S001-R001-99-final-state.png` as diagnostic evidence when possible.
 The timing file is append-only JSONL: one flat line per event with monotonic
 elapsed seconds relative to the start of that demo run.
 

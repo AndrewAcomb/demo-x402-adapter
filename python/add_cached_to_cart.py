@@ -141,6 +141,26 @@ def mint_demo_session(output_dir: Path) -> tuple[str, Path]:
     raise RuntimeError("Demo session ID space S001 through S999 is exhausted")
 
 
+def allocate_demo_request(
+    sessions_dir: Path,
+    resume_pointer: dict[str, object] | None,
+) -> tuple[str, str, Path]:
+    if resume_pointer is not None:
+        demo_session_id = str(resume_pointer["demo_session_id"])
+        artifact_dir = sessions_dir / demo_session_id
+        if not artifact_dir.is_dir():
+            raise RuntimeError(
+                f"artifact directory for {demo_session_id} is missing"
+            )
+        request_number = int(resume_pointer.get("request_number", 1)) + 1
+    else:
+        demo_session_id, artifact_dir = mint_demo_session(sessions_dir)
+        request_number = 1
+    if request_number > 999:
+        raise RuntimeError(f"request number for {demo_session_id} exceeded R999")
+    return demo_session_id, f"R{request_number:03d}", artifact_dir
+
+
 def choose_product(
     products: list[dict[str, object]], interactive: bool, selector: str | None = None
 ) -> dict[str, object]:
@@ -221,31 +241,32 @@ def stamp_provenance(
     path: Path,
     *,
     demo_session_id: str,
+    request_id: str,
     h_session_id: str,
     context: str,
 ) -> None:
-    """Overlay an audit footer without obscuring the browser viewport content."""
+    """Add a lossless audit header without altering browser screenshot pixels."""
     timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     short_context = textwrap.shorten(context, width=110, placeholder="…")
     with Image.open(path) as source:
         image = source.convert("RGB")
-    footer_height = 82
-    canvas = Image.new("RGB", (image.width, image.height + footer_height), (10, 18, 32))
-    canvas.paste(image, (0, 0))
+    header_height = 108
+    canvas = Image.new("RGB", (image.width, image.height + header_height), (44, 47, 54))
+    canvas.paste(image, (0, header_height))
     draw = ImageDraw.Draw(canvas)
-    top = image.height
-    draw.rectangle((0, top, image.width, canvas.height), fill=(10, 18, 32))
-    draw.rectangle((0, top, 9, canvas.height), fill=(41, 211, 176))
-    font = ImageFont.load_default(size=18)
-    bold_font = ImageFont.load_default(size=19)
+    draw.rectangle((0, 0, image.width - 1, header_height - 1), fill=(44, 47, 54))
+    draw.rectangle((0, 0, 11, header_height - 1), fill=(45, 212, 191))
+    draw.line((11, header_height - 1, image.width, header_height - 1), fill=(82, 86, 96), width=1)
+    font = ImageFont.load_default(size=23)
+    bold_font = ImageFont.load_default(size=25)
     draw.text(
-        (24, top + 10),
-        f"{demo_session_id}  ·  {timestamp}  ·  H {h_session_id}",
+        (30, 16),
+        f"{demo_session_id}  ·  {request_id}  ·  {timestamp}  ·  H {h_session_id}",
         font=font,
         fill=(226, 232, 240),
     )
     draw.text(
-        (24, top + 43),
+        (30, 58),
         short_context,
         font=bold_font,
         fill=(250, 204, 21),
@@ -311,7 +332,7 @@ def main() -> None:
         "--sessions-dir", type=Path, default=RUNTIME / "sessions"
     )
     parser.add_argument(
-        "--log-file", type=Path, default=RUNTIME / "logs/fetch-products.log"
+        "--log-file", type=Path, default=RUNTIME / "logs/app.log"
     )
     parser.add_argument(
         "--address-file", type=Path, default=RUNTIME / "private/addresses.json"
@@ -403,14 +424,22 @@ def main() -> None:
                 and value != address.recipient_name
             ):
                 RUNTIME_SECRETS.add(value)
-    demo_session_id, artifact_dir = mint_demo_session(args.sessions_dir)
-    timing_path = artifact_dir / f"{demo_session_id}-timing.jsonl"
+    try:
+        demo_session_id, request_id, artifact_dir = allocate_demo_request(
+            args.sessions_dir, resume_pointer
+        )
+    except RuntimeError as exc:
+        parser.error(f"cannot allocate request: {exc}")
+    request_number = int(request_id.removeprefix("R"))
+    artifact_prefix = f"{demo_session_id}-{request_id}"
+    timing_path = artifact_dir / f"{artifact_prefix}-timing.jsonl"
     timing_lock = Lock()
     flow_started_monotonic = time.monotonic()
 
     def record_timing(event: str, **details: object) -> None:
         record = {
             "demo_session_id": demo_session_id,
+            "request_id": request_id,
             "event": event,
             "elapsed_seconds": round(time.monotonic() - flow_started_monotonic, 3),
             "recorded_at": datetime.now(UTC).isoformat(),
@@ -423,15 +452,19 @@ def main() -> None:
             timing_path.chmod(0o600)
 
     record_timing("run-started")
-    enable_tee(args.log_file)
+    enable_tee(args.log_file, demo_session_id, request_id)
     part_number = str(product["part_number"]) if product is not None else None
     start_url = str(product["url"]) if product is not None else None
     if product is not None and catalog_path is not None:
         local_banner(
             f"{demo_session_id}: USING CACHE {catalog_path.name}; SELECTED {part_number} AT "
-            f"{product['currency']} {product['package_price']:.2f}"
+            f"{product['currency']} {product['package_price']:.2f}",
+            component="AddCart",
         )
-    local_banner(f"{demo_session_id}: ARTIFACTS WILL BE SAVED UNDER {artifact_dir.resolve()}")
+    local_banner(
+        f"{demo_session_id}: ARTIFACTS WILL BE SAVED UNDER {artifact_dir.resolve()}",
+        component="CartFlow",
+    )
 
     email = os.environ.get("MCMASTER_EMAIL")
     password = os.environ.get("MCMASTER_PASSWORD")
@@ -487,13 +520,15 @@ def main() -> None:
             local_banner(
                 f"{demo_session_id}: CHECKPOINT {checkpoint} FAILED — NO SCREENSHOT",
                 LOCAL_FAILURE,
+                component="Screenshot",
             )
             raise RuntimeError("No browser screenshot is available for this checkpoint")
-        path = artifact_dir / f"{demo_session_id}-{CHECKPOINTS[checkpoint]}.png"
+        path = artifact_dir / f"{artifact_prefix}-{CHECKPOINTS[checkpoint]}.png"
         save_image(image, path)
         stamp_provenance(
             path,
             demo_session_id=demo_session_id,
+            request_id=request_id,
             h_session_id=session.id,
             context=f"{workflow_context}  ·  {checkpoint.upper()}",
         )
@@ -506,6 +541,7 @@ def main() -> None:
         local_banner(
             f"{demo_session_id}: SAVED CHECKPOINT {checkpoint} TO {path.resolve()}",
             LOCAL_SUCCESS,
+            component="Screenshot",
         )
         return f"Saved {checkpoint} checkpoint for {demo_session_id}"
 
@@ -545,26 +581,40 @@ def main() -> None:
                 f"{demo_session_id}: AUTHORIZED ONE PLACE ORDER CLICK FOR "
                 f"{normalized_part} AT USD {total:.2f}",
                 LOCAL_SUCCESS,
+                component="Purchase",
             )
             return "AUTHORIZED: click Place Order exactly once, then verify confirmation"
 
         tools.append(authorize_place_order)
     reader = ImapCodeReader.from_env()
     if reader is not None:
-        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP")
+        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA")
         reader.establish_baseline()
-        local_banner("IMAP READY — NEW-MESSAGE BASELINE RECORDED", LOCAL_SUCCESS)
+        local_banner(
+            "IMAP READY — NEW-MESSAGE BASELINE RECORDED",
+            LOCAL_SUCCESS,
+            component="Email2FA",
+        )
 
         def wait_for_email_2fa_code(timeout_seconds: int = 180) -> str:
             """Wait for a new McMaster email and return its verification code."""
-            local_banner(f"H CALLED EMAIL TOOL — POLLING ({timeout_seconds}s timeout)")
+            local_banner(
+                f"H CALLED EMAIL TOOL — POLLING ({timeout_seconds}s timeout)",
+                component="Email2FA",
+            )
             try:
                 code = reader.wait_for_code(timeout_seconds)
                 RUNTIME_SECRETS.add(code)
-                local_banner("2FA CODE EXTRACTED — RETURNING IT TO H", LOCAL_SUCCESS)
+                local_banner(
+                    "2FA CODE EXTRACTED — RETURNING IT TO H",
+                    LOCAL_SUCCESS,
+                    component="Email2FA",
+                )
                 return code
             except Exception:
-                local_banner("EMAIL 2FA TOOL FAILED", LOCAL_FAILURE)
+                local_banner(
+                    "EMAIL 2FA TOOL FAILED", LOCAL_FAILURE, component="Email2FA"
+                )
                 raise
 
         tools.append(wait_for_email_2fa_code)
@@ -703,6 +753,7 @@ CHECKOUT ACTION:
         local_banner(
             f"{demo_session_id}: RESUMED WARM H SESSION {h_session_id}",
             LOCAL_SUCCESS,
+            component="Resume",
         )
         record_timing(
             "h-session-resumed",
@@ -731,11 +782,16 @@ CHECKOUT ACTION:
     print(f"Demo session: {demo_session_id}", flush=True)
     print(f"H session: {session.id}", flush=True)
     print(f"H Agent View: {snapshot.agent_view_url}", flush=True)
-    local_banner(
-        "STREAMING COMPOSABLE CART WORKFLOW — PLACE ORDER IS EXPLICITLY ENABLED"
-        if args.place_order
-        else "STREAMING COMPOSABLE CART WORKFLOW — PLACE ORDER IS FORBIDDEN"
-    )
+    if args.place_order:
+        local_banner(
+            "STREAMING COMPOSABLE CART WORKFLOW — PLACE ORDER IS EXPLICITLY ENABLED",
+            component="Purchase",
+        )
+    else:
+        local_banner(
+            "STREAMING COMPOSABLE CART WORKFLOW — PLACE ORDER IS FORBIDDEN",
+            component="CartFlow",
+        )
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -764,12 +820,13 @@ CHECKOUT ACTION:
 
     missing_checkpoints = required_checkpoints - captured_checkpoints
     if missing_checkpoints and latest_image is not None:
-        final_state_path = artifact_dir / f"{demo_session_id}-99-final-state.png"
+        final_state_path = artifact_dir / f"{artifact_prefix}-99-final-state.png"
         try:
             save_image(latest_image, final_state_path)
             stamp_provenance(
                 final_state_path,
                 demo_session_id=demo_session_id,
+                request_id=request_id,
                 h_session_id=session.id,
                 context=f"{workflow_context}  ·  FALLBACK FINAL STATE",
             )
@@ -777,9 +834,14 @@ CHECKOUT ACTION:
             local_banner(
                 f"{demo_session_id}: SAVED FALLBACK FINAL STATE TO {final_state_path.resolve()}",
                 LOCAL_FAILURE,
+                component="Screenshot",
             )
         except Exception as exc:
-            local_banner(f"SCREENSHOT DOWNLOAD FAILED: {exc}", LOCAL_FAILURE)
+            local_banner(
+                f"SCREENSHOT DOWNLOAD FAILED: {exc}",
+                LOCAL_FAILURE,
+                component="Screenshot",
+            )
 
     if result.answer is None:
         record_timing(
@@ -793,9 +855,10 @@ CHECKOUT ACTION:
     output = redact_secrets(raw_output)
     assert isinstance(output, dict)
     output["demo_session_id"] = demo_session_id
+    output["request_id"] = request_id
     output["h_session_id"] = session.id
     output["captured_checkpoints"] = sorted(captured_checkpoints)
-    result_path = artifact_dir / f"{demo_session_id}-result.json"
+    result_path = artifact_dir / f"{artifact_prefix}-result.json"
     result_path.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
     result_path.chmod(0o600)
     print(json.dumps(output, indent=2), flush=True)
@@ -851,6 +914,8 @@ CHECKOUT ACTION:
                 {
                     "h_session_id": session.id,
                     "demo_session_id": demo_session_id,
+                    "request_number": request_number,
+                    "request_id": request_id,
                     "saved_at": saved_at.isoformat(),
                     "resumable_until": (
                         saved_at + timedelta(seconds=MAX_RESUME_AGE_SECONDS)
@@ -871,18 +936,21 @@ CHECKOUT ACTION:
             local_banner(
                 f"{demo_session_id}: SAVED WARM H SESSION POINTER FOR --resume",
                 LOCAL_SUCCESS,
+                component="Resume",
             )
         else:
             LAST_SESSION_PATH.unlink(missing_ok=True)
             local_banner(
                 f"{demo_session_id}: H SESSION ENDED AS {final_status!r}; NOT RESUMABLE",
                 LOCAL_FAILURE,
+                component="Resume",
             )
     if not run_succeeded:
         if missing_checkpoints:
             local_banner(
                 f"{demo_session_id}: MISSING CHECKPOINTS: {', '.join(sorted(missing_checkpoints))}",
                 LOCAL_FAILURE,
+                component="Error",
             )
         raise SystemExit(1)
 

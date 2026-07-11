@@ -44,7 +44,7 @@ def main() -> None:
         "--output-dir", type=Path, default=RUNTIME / "sessions"
     )
     parser.add_argument(
-        "--log-file", type=Path, default=RUNTIME / "logs/fetch-products.log"
+        "--log-file", type=Path, default=RUNTIME / "logs/app.log"
     )
     parser.add_argument(
         "--verify-proxy",
@@ -67,20 +67,33 @@ def main() -> None:
     tools = []
     reader = ImapCodeReader.from_env()
     if reader is not None:
-        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP")
+        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA")
         reader.establish_baseline()
-        local_banner("IMAP READY — NEW-MESSAGE BASELINE RECORDED", LOCAL_SUCCESS)
+        local_banner(
+            "IMAP READY — NEW-MESSAGE BASELINE RECORDED",
+            LOCAL_SUCCESS,
+            component="Email2FA",
+        )
 
         def wait_for_email_2fa_code(timeout_seconds: int = 180) -> str:
             """Wait for a new McMaster email and return its verification code."""
-            local_banner(f"H CALLED EMAIL TOOL — POLLING ({timeout_seconds}s timeout)")
+            local_banner(
+                f"H CALLED EMAIL TOOL — POLLING ({timeout_seconds}s timeout)",
+                component="Email2FA",
+            )
             try:
                 code = reader.wait_for_code(timeout_seconds)
                 RUNTIME_SECRETS.add(code)
-                local_banner("2FA CODE EXTRACTED — RETURNING IT TO H", LOCAL_SUCCESS)
+                local_banner(
+                    "2FA CODE EXTRACTED — RETURNING IT TO H",
+                    LOCAL_SUCCESS,
+                    component="Email2FA",
+                )
                 return code
             except Exception:
-                local_banner("EMAIL 2FA TOOL FAILED", LOCAL_FAILURE)
+                local_banner(
+                    "EMAIL 2FA TOOL FAILED", LOCAL_FAILURE, component="Email2FA"
+                )
                 raise
 
         tools.append(wait_for_email_2fa_code)
@@ -124,7 +137,7 @@ remaining_line_items=0 and final_url set to the visible cart URL.
     snapshot = session.get()
     print(f"H session: {session.id}", flush=True)
     print(f"H Agent View: {snapshot.agent_view_url}", flush=True)
-    local_banner("STREAMING CART RESET")
+    local_banner("STREAMING CART RESET", component="ResetCart")
 
     latest_image: dict[str, object] | None = None
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -144,11 +157,23 @@ remaining_line_items=0 and final_url set to the visible cart URL.
     if latest_image is not None:
         try:
             save_image(latest_image, proof_path)
-            local_banner(f"SAVED EMPTY-CART PROOF TO {proof_path.resolve()}", LOCAL_SUCCESS)
+            local_banner(
+                f"SAVED EMPTY-CART PROOF TO {proof_path.resolve()}",
+                LOCAL_SUCCESS,
+                component="Screenshot",
+            )
         except Exception as exc:
-            local_banner(f"SCREENSHOT DOWNLOAD FAILED: {exc}", LOCAL_FAILURE)
+            local_banner(
+                f"SCREENSHOT DOWNLOAD FAILED: {exc}",
+                LOCAL_FAILURE,
+                component="Screenshot",
+            )
     else:
-        local_banner("NO SCREENSHOT WAS PRESENT IN THE H EVENT STREAM", LOCAL_FAILURE)
+        local_banner(
+            "NO SCREENSHOT WAS PRESENT IN THE H EVENT STREAM",
+            LOCAL_FAILURE,
+            component="Screenshot",
+        )
 
     if result.answer is None:
         raise SystemExit("H returned no structured reset result")

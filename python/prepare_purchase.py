@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from io import TextIOBase
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,6 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from h_browser_runtime import HBrowserRuntime
 from email_2fa import ImapCodeReader
+from structured_logging import configure_structured_output, log_output
 
 
 START_URL = (
@@ -36,36 +36,28 @@ LOCAL_FAILURE = "\033[31m"
 COLOR_RESET = "\033[0m"
 
 
-class Tee(TextIOBase):
-    def __init__(self, *streams: TextIOBase) -> None:
-        self.streams = streams
-
-    def write(self, value: str) -> int:
-        for stream in self.streams:
-            stream.write(value)
-            stream.flush()
-        return len(value)
-
-    def flush(self) -> None:
-        for stream in self.streams:
-            stream.flush()
+def enable_tee(
+    log_path: Path,
+    session_id: str = "S000",
+    request_id: str = "R001",
+) -> None:
+    configure_structured_output(
+        log_path,
+        session_id=session_id,
+        request_id=request_id,
+    )
+    print(f"Logging live output to {log_path.resolve()}", flush=True)
 
 
-def enable_tee(log_path: Path) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_file = log_path.open("a", encoding="utf-8", buffering=1)
-    separator = datetime.now(UTC).strftime("\n=== run %Y-%m-%dT%H:%M:%SZ ===\n")
-    log_file.write(separator)
-    log_file.flush()
-    sys.stdout = Tee(sys.__stdout__, log_file)
-    sys.stderr = Tee(sys.__stderr__, log_file)
-    print(f"Teeing live output to {log_path.resolve()}", flush=True)
-
-
-def local_banner(message: str, color: str = LOCAL_BANNER) -> None:
-    print(
-        f"\n{color}========== [LLOCALL] LOCAL MAC: {message} =========={COLOR_RESET}\n",
-        flush=True,
+def local_banner(
+    message: str,
+    color: str = LOCAL_BANNER,
+    component: str = "LLOCALL",
+) -> None:
+    del color
+    log_output(
+        f"========== [LLOCALL] LOCAL MAC: {message} ==========",
+        component=component,
     )
 
 
@@ -147,29 +139,38 @@ def print_live_event(event: object) -> None:
     event_type = payload.get("type", type(event).__name__)
     data = payload.get("data") or {}
     if event_type == "ActiveStateChangeEvent":
-        print(f"[state] {data.get('state')}", flush=True)
+        log_output(f"[state] {data.get('state')}", component="HHStream")
         if data.get("state") == "awaiting_tool_results":
             local_banner("H PAUSED — LOCAL TOOL CALLBACK REQUESTED")
     elif event_type == "AgentStartedEvent":
-        print("[agent] started", flush=True)
+        log_output("[agent] started", component="HHStream")
     elif event_type == "AgentCompletionEvent":
-        print(f"[agent] completed: {data.get('reason')}", flush=True)
+        log_output(f"[agent] completed: {data.get('reason')}", component="HHStream")
     elif event_type == "AgentErrorEvent":
-        print(f"[error] {compact(data.get('error'))}", flush=True)
+        log_output(
+            f"[error] {compact(data.get('error'))}",
+            component="HHStream",
+            level=logging.ERROR,
+        )
     elif event_type == "MetricsUpdateEvent":
-        print(f"[metrics] steps={(data.get('metrics') or {}).get('steps')}", flush=True)
+        log_output(
+            f"[metrics] steps={(data.get('metrics') or {}).get('steps')}",
+            component="HHStream",
+        )
     elif event_type == "AgentEvent":
         kind = data.get("kind")
         if kind == "observation_event":
             metadata = data.get("metadata") or {}
-            print(
+            log_output(
                 f"[page] {metadata.get('title') or 'untitled'} — "
                 f"{metadata.get('url') or 'unknown URL'}",
-                flush=True,
+                component="HHStream",
             )
         elif kind == "policy_event":
             if data.get("content"):
-                print(f"[agent] {compact(data['content'])}", flush=True)
+                log_output(
+                    f"[agent] {compact(data['content'])}", component="HHStream"
+                )
             for tool in data.get("tool_reqs") or []:
                 name = tool.get("tool_name", "unknown")
                 args = dict(tool.get("args") or {})
@@ -177,17 +178,33 @@ def print_live_event(event: object) -> None:
                     for field in ("content", "text", "value"):
                         if field in args:
                             args[field] = "<redacted>"
-                print(f"[action] {name} {compact(args)}", flush=True)
+                log_output(
+                    f"[action] {name} {compact(args)}", component="HHStream"
+                )
         elif kind == "tool_result":
             request = data.get("tool_req") or {}
             tool_name = request.get("tool_name", "tool")
-            print(f"[result] {tool_name}: {compact(data.get('result'))}", flush=True)
+            log_output(
+                f"[result] {tool_name}: {compact(data.get('result'))}",
+                component="HHStream",
+            )
             if tool_name == "wait_for_email_2fa_code":
-                local_banner("EMAIL RESULT DELIVERED — H RESUMING", LOCAL_SUCCESS)
+                local_banner(
+                    "EMAIL RESULT DELIVERED — H RESUMING",
+                    LOCAL_SUCCESS,
+                    component="Email2FA",
+                )
         elif kind == "answer_event":
-            print(f"[answer] {compact(data.get('answer'), 2_000)}", flush=True)
+            log_output(
+                f"[answer] {compact(data.get('answer'), 2_000)}",
+                component="HHStream",
+            )
         elif kind == "error_event":
-            print(f"[step error] {compact(data.get('error'))}", flush=True)
+            log_output(
+                f"[step error] {compact(data.get('error'))}",
+                component="HHStream",
+                level=logging.ERROR,
+            )
 
 
 def save_catalog(payload: dict[str, object], output_dir: Path) -> Path:
@@ -219,7 +236,7 @@ def main() -> None:
     parser.add_argument(
         "--log-file",
         type=Path,
-        default=RUNTIME / "logs/fetch-products.log",
+        default=RUNTIME / "logs/app.log",
         help="Append terminal output here while also printing it live",
     )
     parser.add_argument(
@@ -246,22 +263,33 @@ def main() -> None:
     email_reader = ImapCodeReader.from_env()
     tools = []
     if email_reader is not None:
-        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP")
+        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA")
         email_reader.establish_baseline()
-        local_banner("IMAP READY — NEW-MESSAGE BASELINE RECORDED", LOCAL_SUCCESS)
+        local_banner(
+            "IMAP READY — NEW-MESSAGE BASELINE RECORDED",
+            LOCAL_SUCCESS,
+            component="Email2FA",
+        )
 
         def wait_for_email_2fa_code(timeout_seconds: int = 180) -> str:
             """Wait for a new McMaster email and return its verification code."""
             local_banner(
-                f"H CALLED EMAIL TOOL — POLLING FOR NEW 2FA MAIL ({timeout_seconds}s timeout)"
+                f"H CALLED EMAIL TOOL — POLLING FOR NEW 2FA MAIL ({timeout_seconds}s timeout)",
+                component="Email2FA",
             )
             try:
                 code = email_reader.wait_for_code(timeout_seconds)
                 RUNTIME_SECRETS.add(code)
-                local_banner("2FA CODE EXTRACTED — RETURNING IT TO H", LOCAL_SUCCESS)
+                local_banner(
+                    "2FA CODE EXTRACTED — RETURNING IT TO H",
+                    LOCAL_SUCCESS,
+                    component="Email2FA",
+                )
                 return code
             except Exception:
-                local_banner("EMAIL 2FA TOOL FAILED", LOCAL_FAILURE)
+                local_banner(
+                    "EMAIL 2FA TOOL FAILED", LOCAL_FAILURE, component="Email2FA"
+                )
                 raise
 
         tools.append(wait_for_email_2fa_code)
