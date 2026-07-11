@@ -53,10 +53,18 @@ class ContextFormatter(logging.Formatter):
 class LoggingStream:
     """Turn arbitrary print output into complete classified log records."""
 
+    encoding = "utf-8"
+
     def __init__(self, logger: logging.Logger, level: int) -> None:
         self.logger = logger
         self.level = level
         self.buffer = ""
+
+    def isatty(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
 
     def write(self, value: str) -> int:
         self.buffer += value

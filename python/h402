@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -244,6 +245,8 @@ def main() -> None:
         if not tokens:
             fail("--resume must accompany a cart or checkout command")
     command, rest = tokens[0], tokens[1:]
+    if resume_requested and command not in {"cart", "checkout"}:
+        fail("--resume is supported only for cart and checkout workflows")
     if command == "cart":
         rest.extend(browser_options)
         if resume_requested:
@@ -289,14 +292,13 @@ def main() -> None:
             fail("logs accepts only --local")
         log_path = RUNTIME / "logs/app.log"
         if rest == ["--local"]:
-            command_line = f"tail -F {log_path!s} | grep --line-buffered LLOCALL"
+            command_line = (
+                f"tail -F {shlex.quote(str(log_path))} | grep --line-buffered LLOCALL"
+            )
             raise SystemExit(subprocess.run(["sh", "-c", command_line]).returncode)
         raise SystemExit(subprocess.run(["tail", "-F", str(log_path)]).returncode)
     else:
         fail(f"unknown command {command!r}")
-
-    if resume_requested:
-        fail("--resume is supported only for cart and checkout workflows")
 
 
 if __name__ == "__main__":

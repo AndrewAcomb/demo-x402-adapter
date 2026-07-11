@@ -33,7 +33,21 @@ def load_state() -> dict[str, object]:
     return json.loads(STATE_PATH.read_text(encoding="utf-8"))
 
 
+def chrome_running() -> bool:
+    return subprocess.run(
+        ["pgrep", "-x", "Google Chrome"],
+        stdout=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
 def open_chrome() -> None:
+    if chrome_running():
+        print(
+            "WARNING: Chrome is already running; macOS ignores --profile-directory "
+            "for a running app. Quit Chrome first to guarantee Profile 7 opens.",
+            flush=True,
+        )
     subprocess.Popen(
         [
             "/usr/bin/open",
@@ -53,23 +67,13 @@ def open_chrome() -> None:
 
 
 def quit_chrome() -> None:
-    running = subprocess.run(
-        ["pgrep", "-x", "Google Chrome"],
-        stdout=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0
-    if not running:
+    if not chrome_running():
         return
 
     print("Quitting Chrome cleanly so Profile 7 databases are flushed...", flush=True)
     subprocess.run(["osascript", "-e", 'quit app "Google Chrome"'], check=True)
     for _ in range(20):
-        still_running = subprocess.run(
-            ["pgrep", "-x", "Google Chrome"],
-            stdout=subprocess.DEVNULL,
-            check=False,
-        ).returncode == 0
-        if not still_running:
+        if not chrome_running():
             return
         time.sleep(0.5)
     raise RuntimeError("Chrome did not quit within 10 seconds")
@@ -194,8 +198,14 @@ def activate(version: int, profile_name: str, profile_id: str) -> None:
     temporary.replace(STATE_PATH)
 
     contents = ENV_PATH.read_text(encoding="utf-8")
-    contents = ENV_ID_LINE.sub(f"HAI_BROWSER_PROFILE_ID={profile_id}", contents)
-    contents = ENV_NAME_LINE.sub(f"HAI_BROWSER_PROFILE_NAME={profile_name}", contents)
+    for pattern, line in (
+        (ENV_ID_LINE, f"HAI_BROWSER_PROFILE_ID={profile_id}"),
+        (ENV_NAME_LINE, f"HAI_BROWSER_PROFILE_NAME={profile_name}"),
+    ):
+        if pattern.search(contents):
+            contents = pattern.sub(line, contents)
+        else:
+            contents = contents.rstrip("\n") + f"\n{line}\n"
     ENV_PATH.write_text(contents, encoding="utf-8")
     ENV_PATH.chmod(0o600)
 

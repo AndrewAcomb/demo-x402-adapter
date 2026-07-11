@@ -129,7 +129,7 @@ def compact(value: object, limit: int = 500) -> str:
         if secret:
             rendered = rendered.replace(secret, f"<{variable.lower()}-redacted>")
     for secret in RUNTIME_SECRETS:
-        rendered = rendered.replace(secret, "<2fa-code-redacted>")
+        rendered = rendered.replace(secret, "<redacted>")
     rendered = " ".join(rendered.split())
     return rendered if len(rendered) <= limit else rendered[: limit - 1] + "…"
 

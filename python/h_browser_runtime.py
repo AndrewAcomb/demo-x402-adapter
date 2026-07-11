@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,17 @@ from h_profile import load_state
 
 
 DEFAULT_AGENT = "h/web-surfer-pro"
+DEFAULT_PROXY_EGRESS_IP = "54.71.20.137"
+
+
+def proxy_verification_instruction() -> str:
+    """Prompt block for --verify-proxy runs that start on api.ipify.org."""
+    expected_ip = os.environ.get("EXPECTED_PROXY_EGRESS_IP", DEFAULT_PROXY_EGRESS_IP)
+    return f"""
+First inspect the JSON at the current api.ipify.org page. Confirm its public IP
+is exactly {expected_ip}. If it differs, stop immediately with success=false and
+blocker="custom proxy egress verification failed". Do not expose proxy credentials.
+""".strip()
 
 
 @dataclass(frozen=True)

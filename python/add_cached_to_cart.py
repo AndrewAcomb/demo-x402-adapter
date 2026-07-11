@@ -23,7 +23,7 @@ from hai_agents import Client
 from pydantic import BaseModel, Field, field_validator
 
 from email_2fa import ImapCodeReader
-from h_browser_runtime import HBrowserRuntime
+from h_browser_runtime import HBrowserRuntime, proxy_verification_instruction
 from prepare_purchase import (
     LOCAL_FAILURE,
     LOCAL_SUCCESS,
@@ -417,12 +417,9 @@ def main() -> None:
             args.recipient,
         )
         address_payload = address.model_dump(mode="json")
-        for value in address_payload.values():
-            if (
-                isinstance(value, str)
-                and len(value) >= 5
-                and value != address.recipient_name
-            ):
+        for field in ("street1", "street2", "postal_code", "email", "phone"):
+            value = address_payload[field]
+            if isinstance(value, str) and len(value) >= 5:
                 RUNTIME_SECRETS.add(value)
     try:
         demo_session_id, request_id, artifact_dir = allocate_demo_request(
@@ -491,6 +488,7 @@ def main() -> None:
     client = Client()
     tools = []
     latest_image: dict[str, object] | None = None
+    latest_image_index = 0
     image_lock = Lock()
     captured_checkpoints: set[str] = set()
     purchase_authorized = False
@@ -516,6 +514,7 @@ def main() -> None:
             raise ValueError(f"Unknown checkpoint {checkpoint!r}; expected one of: {allowed}")
         with image_lock:
             image = latest_image
+            image_index = latest_image_index
         if image is None:
             local_banner(
                 f"{demo_session_id}: CHECKPOINT {checkpoint} FAILED — NO SCREENSHOT",
@@ -537,6 +536,7 @@ def main() -> None:
         record_timing(
             checkpoint,
             artifact=path.name,
+            image_event_index=image_index,
         )
         local_banner(
             f"{demo_session_id}: SAVED CHECKPOINT {checkpoint} TO {path.resolve()}",
@@ -620,13 +620,9 @@ def main() -> None:
         tools.append(wait_for_email_2fa_code)
 
     browser_runtime = HBrowserRuntime.resolve(client, args.h_environment)
-    proxy_instruction = ""
-    if args.verify_proxy:
-        proxy_instruction = """
-First inspect the JSON at the current api.ipify.org page. Confirm its public IP
-is exactly 54.71.20.137. If it differs, stop immediately with success=false and
-blocker="custom proxy egress verification failed". Do not expose proxy credentials.
-""".strip()
+    proxy_instruction = (
+        proxy_verification_instruction() if args.verify_proxy else ""
+    )
 
     required_checkpoints: set[str] = {"initial-state"}
     if do_reset:
@@ -808,6 +804,7 @@ CHECKOUT ACTION:
                 if data.get("kind") == "observation_event" and data.get("image"):
                     with image_lock:
                         latest_image = data["image"]
+                        latest_image_index += 1
             result = waiter.result()
     except Exception as exc:
         record_timing(
@@ -882,14 +879,13 @@ CHECKOUT ACTION:
     else:
         purchase_state_valid = (
             not result.answer.place_order_clicked
-            and (not do_checkout or result.answer.place_order_visible)
             and not result.answer.order_confirmed
+            and (not do_checkout or result.answer.place_order_visible)
         )
     checkout_valid = (
         not do_checkout
         or parsed_total is not None
         and parsed_total <= Decimal(str(args.max_total))
-        and purchase_state_valid
     )
     run_succeeded = not (
         not result.answer.success
@@ -897,6 +893,7 @@ CHECKOUT ACTION:
         or "david" not in result.answer.account_indicator.casefold()
         or not product_matches
         or result.answer.cart_quantity != (0 if args.reset_only else 1)
+        or not purchase_state_valid
         or not checkout_valid
         or missing_checkpoints
     )
