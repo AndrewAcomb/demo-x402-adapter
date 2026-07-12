@@ -180,9 +180,14 @@ def handle_order(order_id: str) -> None:
 
     with tempfile.TemporaryDirectory(prefix=f"order-{order_id[:8]}-") as tmp:
         address_file = write_address_file(order, Path(tmp))
+        # Product ids are "{merchant_nickname}:{item}" — route the run to the
+        # right registered merchant (catalog + ordering page).
+        merchant_nickname = order["product_id"].split(":", 1)[0]
         cmd = [
             sys.executable,
             "add_cached_to_cart.py",
+            "--merchant",
+            merchant_nickname,
             "--product",
             order["product_id"],
             "--recipient",
