@@ -180,6 +180,28 @@ app.get('/orders/:orderId', async (c) => {
   });
 });
 
+// Client-compat shim: our payment middleware emits the 402 challenge only in
+// the PAYMENT-REQUIRED header with an empty JSON body, but some official x402
+// client wrappers (e.g. @x402/fetch) parse the challenge from the response
+// BODY and silently retry unpaid when it's missing. Echo the decoded header
+// challenge into the body so both styles of client can pay.
+app.use(async (c, next) => {
+  await next();
+  if (c.res?.status !== 402) return;
+  const header = c.res.headers.get('payment-required');
+  if (!header) return;
+  try {
+    const body = await c.res.clone().text();
+    if (body && body !== '{}') return; // body already populated
+    const challenge = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
+    const headers = new Headers(c.res.headers);
+    headers.delete('content-length');
+    c.res = new Response(JSON.stringify(challenge), { status: 402, headers });
+  } catch {
+    // Never break the challenge over a body nicety.
+  }
+});
+
 app.use(
   paymentMiddleware(
     {
