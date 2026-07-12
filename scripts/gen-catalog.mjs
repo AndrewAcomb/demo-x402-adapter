@@ -26,15 +26,17 @@ if (!Array.isArray(products) || products.length === 0) {
   process.exit(1);
 }
 
-// x402 charge = 1.5x the real merchant price, so a settled payment always
-// covers the underlying McMaster cost (plus margin) if a stranger buys.
+// x402 charge = 1.5x the real merchant item price + a flat shipping/tax
+// buffer, so a settled payment always covers the underlying McMaster cost.
+// Observed real order: $5.36 item + $13.25 standard shipping + $0.46 tax.
 const MARGIN = 1.5;
+const SHIPPING_BUFFER_USD = 15;
 
 const entries = products
   .map((p) => {
     const name = `${p.description.split(',')[0]} ${p.thread_size} x ${p.length} (pack of ${p.package_quantity})`;
     const description = `${p.description} Package of ${p.package_quantity}. McMaster-Carr part ${p.part_number}.`;
-    const charge = (p.package_price * MARGIN).toFixed(2);
+    const charge = (p.package_price * MARGIN + SHIPPING_BUFFER_USD).toFixed(2);
     return `  '${p.durable_id}': {
     id: '${p.durable_id}',
     name: ${JSON.stringify(name)},
