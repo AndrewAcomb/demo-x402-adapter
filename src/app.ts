@@ -81,7 +81,8 @@ app.get('/', (c) =>
     name: 'BuyWith402',
     description:
       'Buy real physical products (currently McMaster-Carr hardware) with one x402 ' +
-      'USDC payment on Base. No account needed — the payment is the identity.',
+      'USDC payment on Base. No account needed — the payment is the identity. All ' +
+      'prices are all-inclusive: US shipping and tax are included.',
     payment: {
       protocol: 'x402',
       x402_version: 2,
@@ -128,13 +129,16 @@ app.get('/health', (c) =>
   c.json({ ok: true, network: NETWORK, facilitator: EFFECTIVE_FACILITATOR_URL, pay_to: PAY_TO }),
 );
 
-app.get('/products', (c) => c.json({ products: listProducts() }));
+const PRICING_NOTE =
+  'All prices are all-inclusive: US shipping and tax are included. The price shown is the full x402 charge.';
+
+app.get('/products', (c) => c.json({ pricing_note: PRICING_NOTE, products: listProducts() }));
 
 app.get('/products/:id', (c) => {
   const product = getProduct(c.req.param('id'));
   if (!product) return c.json({ error: 'not_found' }, 404);
   const { source_url, ...safe } = product;
-  return c.json(safe);
+  return c.json({ ...safe, pricing_note: PRICING_NOTE });
 });
 
 /**
@@ -188,8 +192,9 @@ app.use(
         },
         description:
           'BuyWith402 (buywith402.com): buy any product from the catalog with one x402 ' +
-          'USDC payment and get an order id with queued fulfillment. Browse products free ' +
-          'at GET /products; check status at GET /orders/{order_id}.',
+          'USDC payment and get an order id with queued fulfillment. Prices are ' +
+          'all-inclusive (US shipping and tax included). Browse products free at ' +
+          'GET /products; check status at GET /orders/{order_id}.',
         serviceName: 'BuyWith402',
         // Max 5 tags (32 chars each) — extras are dropped by sanitizeTags.
         tags: ['commerce', 'shopping', 'physical', 'hardware', 'marketplace'],
