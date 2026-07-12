@@ -148,3 +148,7 @@ vite.config.ts.timestamp-*
 node_modules/
 dist/
 .vercel
+.env*
+.agents/
+.claude/
+skills-lock.json

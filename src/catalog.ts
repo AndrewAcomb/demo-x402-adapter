@@ -5,8 +5,8 @@
  *   node scripts/gen-catalog.mjs python/runtime/catalogs/001-20260711T225139Z-mcmaster-screws.json
  *
  * Product ids are durable ids shared with the python fulfillment worker.
- * price_usd is the x402 demo charge; merchant_price_usd is the real
- * McMaster package price the fulfillment run will pay.
+ * price_usd is the x402 charge (1.5x the real merchant price so payments
+ * cover fulfillment); merchant_price_usd is the real McMaster package price.
  */
 
 export interface Product {
@@ -26,7 +26,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A100',
     name: "Steel Pan Head Phillips Screw 2-56 x 1/8 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 2-56 thread, 1/8 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A100.",
-    price_usd: '$0.10',
+    price_usd: "$20.09",
     merchant_price_usd: "$13.39",
     source_url: "https://www.mcmaster.com/92224A100",
   },
@@ -34,7 +34,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A101',
     name: "Steel Pan Head Phillips Screw 2-56 x 3/16 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 2-56 thread, 3/16 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A101.",
-    price_usd: '$0.10',
+    price_usd: "$17.28",
     merchant_price_usd: "$11.52",
     source_url: "https://www.mcmaster.com/92224A101",
   },
@@ -42,7 +42,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A102',
     name: "Steel Pan Head Phillips Screw 2-56 x 1/4 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 2-56 thread, 1/4 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A102.",
-    price_usd: '$0.10',
+    price_usd: "$15.18",
     merchant_price_usd: "$10.12",
     source_url: "https://www.mcmaster.com/92224A102",
   },
@@ -50,7 +50,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A103',
     name: "Steel Pan Head Phillips Screw 2-56 x 5/16 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 2-56 thread, 5/16 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A103.",
-    price_usd: '$0.10',
+    price_usd: "$16.21",
     merchant_price_usd: "$10.81",
     source_url: "https://www.mcmaster.com/92224A103",
   },
@@ -58,7 +58,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A104',
     name: "Steel Pan Head Phillips Screw 2-56 x 3/8 inch (pack of 50)",
     description: "Steel Pan Head Phillips Screw, 2-56 thread, 3/8 inch length, Black-Oxide Steel, Fully Threaded Package of 50. McMaster-Carr part 92224A104.",
-    price_usd: '$0.10',
+    price_usd: "$12.88",
     merchant_price_usd: "$8.59",
     source_url: "https://www.mcmaster.com/92224A104",
   },
@@ -66,7 +66,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A105',
     name: "Steel Pan Head Phillips Screw 2-56 x 7/16 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 2-56 thread, 7/16 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A105.",
-    price_usd: '$0.10',
+    price_usd: "$16.68",
     merchant_price_usd: "$11.12",
     source_url: "https://www.mcmaster.com/92224A105",
   },
@@ -74,7 +74,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A106',
     name: "Steel Pan Head Phillips Screw 2-56 x 1/2 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 2-56 thread, 1/2 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A106.",
-    price_usd: '$0.10',
+    price_usd: "$16.84",
     merchant_price_usd: "$11.23",
     source_url: "https://www.mcmaster.com/92224A106",
   },
@@ -82,7 +82,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A109',
     name: "Steel Pan Head Phillips Screw 3-48 x 3/8 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 3-48 thread, 3/8 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A109.",
-    price_usd: '$0.10',
+    price_usd: "$20.00",
     merchant_price_usd: "$13.33",
     source_url: "https://www.mcmaster.com/92224A109",
   },
@@ -90,7 +90,7 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A111',
     name: "Steel Pan Head Phillips Screw 4-40 x 3/16 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 4-40 thread, 3/16 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A111.",
-    price_usd: '$0.10',
+    price_usd: "$8.23",
     merchant_price_usd: "$5.49",
     source_url: "https://www.mcmaster.com/92224A111",
   },
@@ -98,9 +98,17 @@ export const catalog: Record<string, Product> = {
     id: 'mcmaster:92224A112',
     name: "Steel Pan Head Phillips Screw 4-40 x 1/4 inch (pack of 100)",
     description: "Steel Pan Head Phillips Screw, 4-40 thread, 1/4 inch length, Black-Oxide Steel, Fully Threaded Package of 100. McMaster-Carr part 92224A112.",
-    price_usd: '$0.10',
+    price_usd: "$8.04",
     merchant_price_usd: "$5.36",
     source_url: "https://www.mcmaster.com/92224A112",
+  },
+  'test-item': {
+    id: 'test-item',
+    name: 'Test Item (integration test, no fulfillment)',
+    description:
+      'A ten-cent item for testing the x402 purchase flow end to end. ' +
+      'Fulfillment completes immediately without contacting any merchant.',
+    price_usd: '$0.10',
   },
 };
 

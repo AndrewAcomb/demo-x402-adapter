@@ -18,6 +18,7 @@ import { declareDiscoveryExtension } from '@x402/extensions/bazaar';
 import { getProduct, listProducts } from './catalog.js';
 import { PurchaseBody, type OrderResponse } from './schemas.js';
 import { enqueueFulfillment, getFulfillment } from './fulfillment.js';
+import { createOrder, getOrder, getOrderEvents, ordersConfigured } from './orders.js';
 
 const NETWORK = (process.env.X402_NETWORK ?? 'eip155:84532') as Network;
 const PAY_TO = process.env.X402_PAY_TO as `0x${string}` | undefined;
@@ -57,12 +58,71 @@ const resourceServer = new x402ResourceServer(facilitatorClient)
     console.error('[x402] settle failed:', ctx.error?.message);
   });
 
-// Flat demo price for every SKU. Overridable via env for testing.
-const DEMO_PRICE = process.env.X402_PRICE ?? '$0.10';
+// Fallback price when the product id can't be resolved from the path. A paid
+// request for an unknown product 404s in the handler, which cancels the
+// verified payment before settlement — so no money moves on the fallback.
+const FALLBACK_PRICE = process.env.X402_PRICE ?? '$0.10';
+
+/** Per-product price resolved from the catalog at challenge time. */
+const priceForRequest = (ctx: { path: string }) => {
+  const match = ctx.path.match(/^\/products\/([^/]+)\/purchase$/);
+  const product = match ? getProduct(decodeURIComponent(match[1])) : undefined;
+  return product?.price_usd ?? FALLBACK_PRICE;
+};
 
 // --- App -------------------------------------------------------------------
 
 const app = new Hono();
+
+// Agent-friendly API guide at the root: crawlers and agents that probe the
+// bare domain should find a machine-readable map, not a 404.
+app.get('/', (c) =>
+  c.json({
+    name: 'BuyWith402',
+    description:
+      'Buy real physical products (currently McMaster-Carr hardware) with one x402 ' +
+      'USDC payment on Base. No account needed — the payment is the identity.',
+    payment: {
+      protocol: 'x402',
+      x402_version: 2,
+      scheme: 'exact',
+      network: NETWORK,
+      currency: 'USDC',
+    },
+    endpoints: [
+      { method: 'GET', path: '/', description: 'This guide.' },
+      { method: 'GET', path: '/health', description: 'Service status.' },
+      { method: 'GET', path: '/products', description: 'List all products (free).' },
+      { method: 'GET', path: '/products/{id}', description: 'One product (free).' },
+      {
+        method: 'POST',
+        path: '/products/{id}/purchase',
+        description:
+          'Buy a product. Returns a 402 x402 challenge; retry with payment to receive ' +
+          'an order_id. Body: { quantity?, email?, shipping: { name, address_1, ' +
+          'address_2?, city, state, zip, country? }, gift_note?, dry_run? }.',
+      },
+      {
+        method: 'GET',
+        path: '/orders/{order_id}',
+        description:
+          'Order status + live fulfillment progress events (free). Poll with ' +
+          '?since=<next_since> for incremental updates, including screenshots of the ' +
+          'agent checking out on the underlying merchant.',
+      },
+    ],
+    dry_run:
+      'Purchases default to dry_run=true: fulfillment stops at the merchant order-review ' +
+      'screen (no real merchant order is placed). Send dry_run=false to request real ' +
+      'placement.',
+    how_to_buy: [
+      'GET /products and pick a product id',
+      'POST /products/{id}/purchase with your shipping address — receive a 402 challenge',
+      'Pay the challenge with any x402 client (exact scheme, USDC on Base)',
+      'Poll GET /orders/{order_id} to watch fulfillment live',
+    ],
+  }),
+);
 
 app.get('/health', (c) =>
   c.json({ ok: true, network: NETWORK, facilitator: EFFECTIVE_FACILITATOR_URL, pay_to: PAY_TO }),
@@ -77,14 +137,41 @@ app.get('/products/:id', (c) => {
   return c.json(safe);
 });
 
-app.get('/orders/:orderId', (c) => {
-  const intent = getFulfillment(c.req.param('orderId'));
+/**
+ * Order status + live fulfillment progress. Poll-friendly: pass ?since=<seq>
+ * to receive only events newer than the ones already seen. Free (never 402s)
+ * so the buying agent can narrate the fulfillment run in real time.
+ */
+app.get('/orders/:orderId', async (c) => {
+  const orderId = c.req.param('orderId');
+
+  if (ordersConfigured) {
+    const order = await getOrder(orderId);
+    if (!order) return c.json({ error: 'not_found' }, 404);
+    const since = Math.max(0, Number(c.req.query('since') ?? 0) || 0);
+    const events = await getOrderEvents(orderId, since);
+    return c.json({
+      order_id: order.order_id,
+      product_id: order.product_id,
+      quantity: order.quantity,
+      dry_run: order.dry_run,
+      status: order.status,
+      created_at: order.created_at,
+      updated_at: order.updated_at,
+      result: order.result,
+      events,
+      next_since: since + events.length,
+    });
+  }
+
+  // Fallback when the store isn't configured: legacy in-memory lookup.
+  const intent = getFulfillment(orderId);
   if (!intent) return c.json({ error: 'not_found' }, 404);
   return c.json({
     order_id: intent.order_id,
     product_id: intent.product.id,
     quantity: intent.body.quantity,
-    status: 'processing' as const,
+    status: 'queued' as const,
     created_at: intent.created_at,
   });
 });
@@ -95,7 +182,7 @@ app.use(
       'POST /products/:id/purchase': {
         accepts: {
           scheme: 'exact',
-          price: DEMO_PRICE,
+          price: priceForRequest,
           network: NETWORK,
           payTo: PAY_TO,
         },
@@ -174,15 +261,40 @@ app.post('/products/:id/purchase', async (c) => {
   }
 
   const intent = enqueueFulfillment(product, parsed.data);
+
+  // Durable order + fulfillment-queue entry for the python worker. If the
+  // store write fails after payment settled, surface a queued-but-degraded
+  // message rather than failing the paid request.
+  let queued = false;
+  if (ordersConfigured) {
+    try {
+      await createOrder(intent.order_id, product, parsed.data);
+      queued = true;
+    } catch (e) {
+      console.error('[orders] store write failed:', (e as Error).message);
+    }
+  }
+
+  const mode = parsed.data.dry_run
+    ? 'Dry run: fulfillment will stop at the merchant order-review screen.'
+    : 'Live order: fulfillment will place the merchant order.';
   const response: OrderResponse = {
     order_id: intent.order_id,
     product_id: product.id,
     quantity: parsed.data.quantity,
+    dry_run: parsed.data.dry_run,
     status: 'queued',
-    message: `Payment received. Fulfillment queued for ${product.name}.`,
+    message:
+      `Payment received. Fulfillment queued for ${product.name}. ${mode} ` +
+      (queued
+        ? `Poll GET /orders/${intent.order_id} for live progress.`
+        : 'Live progress tracking is temporarily unavailable.'),
   };
   return c.json(response, 200);
 });
+
+// Point lost agents at the guide instead of a bare 404.
+app.notFound((c) => c.json({ error: 'not_found', hint: 'GET / for the API guide' }, 404));
 
 export default app;
 export { NETWORK, PAY_TO, FACILITATOR_URL };

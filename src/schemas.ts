@@ -21,6 +21,13 @@ export const PurchaseBody = z.object({
   email: z.email().optional(),
   shipping: Shipping,
   gift_note: z.string().max(300).optional(),
+  /**
+   * When true (the default), fulfillment stops at the merchant's order-review
+   * screen without placing the order — safe to demo repeatedly. Set false to
+   * request real placement; the worker only honors it when its own
+   * ALLOW_REAL_ORDERS env flag is also set (two-key safety).
+   */
+  dry_run: z.boolean().default(true),
 });
 export type PurchaseBody = z.infer<typeof PurchaseBody>;
 
@@ -29,7 +36,8 @@ export const OrderResponse = z.object({
   order_id: z.uuid(),
   product_id: z.string(),
   quantity: z.number().int(),
-  status: z.enum(['queued', 'processing', 'completed', 'failed']),
+  dry_run: z.boolean(),
+  status: z.enum(['queued', 'running', 'ready_to_place', 'placed', 'failed']),
   message: z.string(),
 });
 export type OrderResponse = z.infer<typeof OrderResponse>;

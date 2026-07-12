@@ -26,20 +26,35 @@ if (!Array.isArray(products) || products.length === 0) {
   process.exit(1);
 }
 
+// x402 charge = 1.5x the real merchant price, so a settled payment always
+// covers the underlying McMaster cost (plus margin) if a stranger buys.
+const MARGIN = 1.5;
+
 const entries = products
   .map((p) => {
     const name = `${p.description.split(',')[0]} ${p.thread_size} x ${p.length} (pack of ${p.package_quantity})`;
     const description = `${p.description} Package of ${p.package_quantity}. McMaster-Carr part ${p.part_number}.`;
+    const charge = (p.package_price * MARGIN).toFixed(2);
     return `  '${p.durable_id}': {
     id: '${p.durable_id}',
     name: ${JSON.stringify(name)},
     description: ${JSON.stringify(description)},
-    price_usd: '$0.10',
+    price_usd: ${JSON.stringify(`$${charge}`)},
     merchant_price_usd: ${JSON.stringify(`$${p.package_price.toFixed(2)}`)},
     source_url: ${JSON.stringify(p.url)},
   },`;
   })
   .join('\n');
+
+// Cheap SKU for integration testing — no real fulfillment behind it.
+const testItem = `  'test-item': {
+    id: 'test-item',
+    name: 'Test Item (integration test, no fulfillment)',
+    description:
+      'A ten-cent item for testing the x402 purchase flow end to end. ' +
+      'Fulfillment completes immediately without contacting any merchant.',
+    price_usd: '$0.10',
+  },`;
 
 const out = `/**
  * Product catalog — GENERATED from the fulfillment-side McMaster catalog.
@@ -48,8 +63,8 @@ const out = `/**
  *   node scripts/gen-catalog.mjs ${src}
  *
  * Product ids are durable ids shared with the python fulfillment worker.
- * price_usd is the x402 demo charge; merchant_price_usd is the real
- * McMaster package price the fulfillment run will pay.
+ * price_usd is the x402 charge (1.5x the real merchant price so payments
+ * cover fulfillment); merchant_price_usd is the real McMaster package price.
  */
 
 export interface Product {
@@ -66,6 +81,7 @@ export interface Product {
 
 export const catalog: Record<string, Product> = {
 ${entries}
+${testItem}
 };
 
 export function listProducts() {
