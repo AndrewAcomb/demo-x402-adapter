@@ -454,21 +454,39 @@ def main() -> None:
             args.interactive or args.interactive_recipient,
             args.recipient,
         )
-        if merchant.fulfillment == "pickup":
+        # Buyer identity belongs to the agent, not the address book: the
+        # contact email is the inbox the agent reads and the phone is the
+        # number it polls. Address-book values are a last-resort fallback.
+        contact_email = (
+            os.environ.get("BUYER_CONTACT_EMAIL")
+            or os.environ.get("EMAIL_IMAP_USERNAME")
+            or address.email
+        )
+        contact_phone = re.sub(
+            r"\D", "", os.environ.get("TWILIO_SMS_NUMBER") or address.phone
+        )[-10:]
+        if not is_mcmaster:
             missing_contact = [
-                field
-                for field in ("recipient_name", "email", "phone")
-                if not getattr(address, field)
+                label
+                for label, value in (
+                    ("recipient name (address book)", address.recipient_name),
+                    ("contact email (BUYER_CONTACT_EMAIL/EMAIL_IMAP_USERNAME)", contact_email),
+                    ("contact phone (TWILIO_SMS_NUMBER)", contact_phone),
+                )
+                if not value
             ]
             if missing_contact:
                 parser.error(
-                    f"pickup checkout for {merchant.nickname} requires address-book "
-                    f"fields: {', '.join(missing_contact)}"
+                    f"guest checkout for {merchant.nickname} requires: "
+                    f"{'; '.join(missing_contact)}"
                 )
         address_payload = address.model_dump(mode="json")
         for field in ("street1", "street2", "postal_code", "email", "phone"):
             value = address_payload[field]
             if isinstance(value, str) and len(value) >= 5:
+                RUNTIME_SECRETS.add(value)
+        for value in (contact_email, contact_phone):
+            if len(value) >= 5:
                 RUNTIME_SECRETS.add(value)
     try:
         demo_session_id, request_id, artifact_dir = allocate_demo_request(
@@ -706,12 +724,13 @@ def main() -> None:
         # the new-mail UID baseline is the real filter.
         reader.sender_filter = ""
     if reader is not None:
-        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA")
+        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA", console_text="")
         reader.establish_baseline()
         local_banner(
             "IMAP READY — NEW-MESSAGE BASELINE RECORDED",
             LOCAL_SUCCESS,
             component="Email2FA",
+            console_text="",
         )
 
         def wait_for_email_2fa_code(timeout_seconds: int = 180) -> str:
@@ -719,6 +738,7 @@ def main() -> None:
             local_banner(
                 f"H CALLED EMAIL TOOL — POLLING ({timeout_seconds}s timeout)",
                 component="Email2FA",
+                console_text="🔐 waiting for emailed verification code…",
             )
             try:
                 code = reader.wait_for_code(timeout_seconds)
@@ -727,6 +747,7 @@ def main() -> None:
                     "2FA CODE EXTRACTED — RETURNING IT TO H",
                     LOCAL_SUCCESS,
                     component="Email2FA",
+                    console_text="🔐 code delivered to H",
                 )
                 return code
             except Exception:
@@ -769,12 +790,14 @@ def main() -> None:
         local_banner(
             f"CONNECTING TO AGENT PHONE NUMBER {sms_reader.number} VIA TWILIO",
             component="SMS2FA",
+            console_text="",
         )
         sms_reader.establish_baseline()
         local_banner(
             "TWILIO READY — NEW-MESSAGE BASELINE RECORDED",
             LOCAL_SUCCESS,
             component="SMS2FA",
+            console_text="",
         )
 
         def wait_for_sms_2fa_code(timeout_seconds: int = 180) -> str:
@@ -782,6 +805,7 @@ def main() -> None:
             local_banner(
                 f"H CALLED SMS TOOL — POLLING TWILIO ({timeout_seconds}s timeout)",
                 component="SMS2FA",
+                console_text="🔐 agent reading the SMS code off its own phone…",
             )
             try:
                 code = sms_reader.wait_for_code(timeout_seconds)
@@ -790,6 +814,7 @@ def main() -> None:
                     "SMS CODE EXTRACTED — RETURNING IT TO H",
                     LOCAL_SUCCESS,
                     component="SMS2FA",
+                    console_text="🔐 code delivered to H",
                 )
                 return code
             except Exception:
@@ -885,16 +910,49 @@ visible_total_usd=<final numeric USD total>) before answering.
 """.strip()
         else:
             assert address is not None
+            ship_to = {
+                key: address_payload[key]
+                for key in (
+                    "recipient_name",
+                    "company",
+                    "street1",
+                    "street2",
+                    "city",
+                    "state",
+                    "postal_code",
+                    "country",
+                )
+                if address_payload.get(key)
+            }
             fulfillment_instruction = (
                 "Choose Pickup with the earliest available time."
                 if merchant.fulfillment == "pickup"
-                else f"Choose Delivery to: {json.dumps(address_payload)}"
+                else (
+                    "Choose Delivery. Fill the delivery address EXACTLY as "
+                    f"follows, reading each field back after typing: {json.dumps(ship_to)}"
+                )
             )
             checkout_instruction = f"""
 Open the cart and proceed to checkout as a GUEST; never sign in or create
 an account. {fulfillment_instruction}
-Fill contact details: name {address.recipient_name}, email {address.email},
-phone {address.phone}. If a tip is requested, set it to zero if possible,
+Fill contact details: name {address.recipient_name}, email {contact_email},
+phone {contact_phone}.
+
+PHONE FIELD TECHNIQUE — this site's phone mask SWALLOWS THE FIRST
+KEYSTROKE, so follow this exact sequence:
+1. Click the field, then clear it completely with select-all (cmd+a or
+   ctrl+a) followed by ONE backspace. A leftover "+1" prefix is fine.
+2. Type ONLY the first digit, {contact_phone[0]}, and read back whether
+   it appeared after the +1. If it did not appear, type it once more
+   until exactly one {contact_phone[0]} shows.
+3. Then type the remaining nine digits: {contact_phone[1:]}.
+4. Read back: the field must contain the digits {contact_phone} in
+   order (mask punctuation like parentheses is fine).
+5. If wrong, clear fully as in step 1 and repeat from step 2. NEVER
+   delete one character at a time.
+Apply the same read-back-and-verify habit to every text field you fill.
+
+If a tip is requested, set it to zero if possible,
 otherwise the minimum. Fill payment with card number
 {payment['CHECKOUT_CARD_NUMBER']}, expiration
 {payment['CHECKOUT_CARD_EXP_MONTH']}/{payment['CHECKOUT_CARD_EXP_YEAR']}, CVV
@@ -979,6 +1037,12 @@ This is ONE composable cart workflow session on {merchant.display_name}
 account. Never echo contact, address, or payment data. In the structured
 answer, return authenticated=false and account_indicator="guest".
 
+CHECKPOINTS ARE MANDATORY: every ACTION section below ends with its
+capture_checkout_checkpoint call. Call each one at the moment its state
+is visible, even if a step turned out to be trivial (for example the
+cart was already empty, or the item was already present). A missing
+checkpoint fails the entire run even if the order succeeds.
+
 VERIFICATION CODES: first look for any option to skip verification or
 continue without it. {sms_code_instruction} Only use
 wait_for_email_2fa_code when the site says it emailed a code. If
@@ -1049,8 +1113,8 @@ true or false, never null.
             answer_schema=CartResult,
             tools=tools,
             messages=workflow_message,
-            max_steps=45,
-            max_time_s=480,
+            max_steps=45 if is_mcmaster else 90,
+            max_time_s=480 if is_mcmaster else 900,
             idle_timeout_s=DEFAULT_IDLE_TIMEOUT_SECONDS,
         )
     snapshot = session.get()
@@ -1079,7 +1143,7 @@ true or false, never null.
         with ThreadPoolExecutor(max_workers=1) as executor:
             waiter = executor.submit(
                 session.wait_for_completion,
-                timeout_seconds=510,
+                timeout_seconds=510 if is_mcmaster else 960,
                 tools=tools,
                 answer_schema=CartResult,
             )
@@ -1183,6 +1247,14 @@ true or false, never null.
         or effective_total is not None
         and effective_total <= Decimal(str(args.max_total))
     )
+    if args.reset_only:
+        quantity_valid = result.answer.cart_quantity == 0
+    elif args.place_order and result.answer.order_confirmed:
+        # A confirmed order legitimately empties the cart on the
+        # confirmation page; either report is honest.
+        quantity_valid = result.answer.cart_quantity in (0, 1)
+    else:
+        quantity_valid = result.answer.cart_quantity == 1
     run_succeeded = not (
         not result.answer.success
         or (
@@ -1193,7 +1265,7 @@ true or false, never null.
             )
         )
         or not product_matches
-        or result.answer.cart_quantity != (0 if args.reset_only else 1)
+        or not quantity_valid
         or not purchase_state_valid
         or not checkout_valid
         or missing_checkpoints
@@ -1214,47 +1286,52 @@ true or false, never null.
     console.key(
         ("✓ SUCCESS · " if run_succeeded else "✗ FAILED · ") + verdict_detail
     )
-    if run_succeeded:
-        final_status = str(session.status().status)
-        if final_status == "idle":
-            saved_at = datetime.now(UTC)
-            write_private_json(
-                LAST_SESSION_PATH,
-                {
-                    "h_session_id": session.id,
-                    "merchant": merchant.nickname,
-                    "demo_session_id": demo_session_id,
-                    "request_number": request_number,
-                    "request_id": request_id,
-                    "saved_at": saved_at.isoformat(),
-                    "resumable_until": (
-                        saved_at + timedelta(seconds=MAX_RESUME_AGE_SECONDS)
-                    ).isoformat(),
-                    "idle_timeout_seconds": DEFAULT_IDLE_TIMEOUT_SECONDS,
-                    "phase": (
-                        "order-confirmed"
-                        if args.place_order
-                        else "place-order-review"
-                        if do_checkout
-                        else "cart-cleared"
-                        if args.reset_only
-                        else "product-in-cart"
-                    ),
-                    "agent_view_url": snapshot.agent_view_url,
-                },
-            )
-            local_banner(
-                f"{demo_session_id}: SAVED WARM H SESSION POINTER FOR --resume",
-                LOCAL_SUCCESS,
-                component="Resume",
-            )
-        else:
-            LAST_SESSION_PATH.unlink(missing_ok=True)
-            local_banner(
-                f"{demo_session_id}: H SESSION ENDED AS {final_status!r}; NOT RESUMABLE",
-                LOCAL_FAILURE,
-                component="Resume",
-            )
+    # An idle session is resumable regardless of verdict — a failed run
+    # (budget exhausted one field from the finish) is exactly when
+    # `--resume` is most valuable.
+    final_status = str(session.status().status)
+    if final_status == "idle":
+        saved_at = datetime.now(UTC)
+        write_private_json(
+            LAST_SESSION_PATH,
+            {
+                "h_session_id": session.id,
+                "merchant": merchant.nickname,
+                "demo_session_id": demo_session_id,
+                "request_number": request_number,
+                "request_id": request_id,
+                "saved_at": saved_at.isoformat(),
+                "resumable_until": (
+                    saved_at + timedelta(seconds=MAX_RESUME_AGE_SECONDS)
+                ).isoformat(),
+                "idle_timeout_seconds": DEFAULT_IDLE_TIMEOUT_SECONDS,
+                "run_succeeded": run_succeeded,
+                "phase": (
+                    "order-confirmed"
+                    if args.place_order and result.answer.order_confirmed
+                    else "place-order-review"
+                    if do_checkout
+                    else "cart-cleared"
+                    if args.reset_only
+                    else "product-in-cart"
+                ),
+                "agent_view_url": snapshot.agent_view_url,
+            },
+        )
+        local_banner(
+            f"{demo_session_id}: SAVED WARM H SESSION POINTER FOR --resume",
+            LOCAL_SUCCESS,
+            component="Resume",
+            console_text="",
+        )
+    else:
+        LAST_SESSION_PATH.unlink(missing_ok=True)
+        local_banner(
+            f"{demo_session_id}: H SESSION ENDED AS {final_status!r}; NOT RESUMABLE",
+            LOCAL_FAILURE,
+            component="Resume",
+            console_text="",
+        )
     if not run_succeeded:
         if missing_checkpoints:
             local_banner(

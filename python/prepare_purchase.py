@@ -280,12 +280,13 @@ def main() -> None:
     email_reader = ImapCodeReader.from_env()
     tools = []
     if email_reader is not None:
-        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA")
+        local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA", console_text="")
         email_reader.establish_baseline()
         local_banner(
             "IMAP READY — NEW-MESSAGE BASELINE RECORDED",
             LOCAL_SUCCESS,
             component="Email2FA",
+            console_text="",
         )
 
         def wait_for_email_2fa_code(timeout_seconds: int = 180) -> str:
@@ -293,6 +294,7 @@ def main() -> None:
             local_banner(
                 f"H CALLED EMAIL TOOL — POLLING FOR NEW 2FA MAIL ({timeout_seconds}s timeout)",
                 component="Email2FA",
+                console_text="🔐 waiting for emailed verification code…",
             )
             try:
                 code = email_reader.wait_for_code(timeout_seconds)
@@ -301,6 +303,7 @@ def main() -> None:
                     "2FA CODE EXTRACTED — RETURNING IT TO H",
                     LOCAL_SUCCESS,
                     component="Email2FA",
+                    console_text="🔐 code delivered to H",
                 )
                 return code
             except Exception:

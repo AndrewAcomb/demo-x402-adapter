@@ -45,7 +45,7 @@ ONBOARD_CHECKPOINTS = {
 
 
 class MenuItem(BaseModel):
-    position: int = Field(ge=1, le=10)
+    position: int = Field(ge=1, le=200)
     item_name: str = Field(min_length=1)
     section: str = ""
     description: str = ""
@@ -75,7 +75,7 @@ class MerchantMenu(BaseModel):
     pickup_available: bool
     delivery_available: bool
     blocker: str | None = None
-    products: list[MenuItem] = Field(max_length=10)
+    products: list[MenuItem] = Field(max_length=200)
 
     @model_validator(mode="after")
     def validate_menu(self) -> MerchantMenu:
@@ -107,7 +107,37 @@ def save_catalog(
     return output_path
 
 
-def onboarding_message(url: str, count: int, max_price: float) -> str:
+def onboarding_message(
+    url: str, count: int, max_price: float, full: bool = False
+) -> str:
+    if full:
+        catalog_task = f"""
+Then catalog the ENTIRE menu at depth one: every currently orderable item
+visible in every menu section, in menu order (up to 200 items). Depth one
+means the listing only — do NOT open item dialogs or option pickers. Read
+exact visible item names, the section each appears under, short visible
+descriptions, and exact displayed prices; never invent or round them. If
+an item requires choices (flavor, size), still include it with options
+left empty — choices are made later at order time. Skip an item only if
+it shows no readable price in the listing. Scroll or switch sections as
+needed until every section has been read once.
+""".strip()
+    else:
+        catalog_task = f"""
+Then build a catalog of {count} inexpensive, currently orderable items,
+each ideally under {max_price:.2f} in the local currency. Do NOT
+exhaustively enumerate the menu: take the first {count} suitable items
+you can verify, ideally all from one or two sections, and stop. Prefer
+simple items that can be added with one click and no required choices:
+sides, sauces, dressings, drinks, desserts, small add-ons. If an item
+requires a selection (size, flavor), either skip it or record the
+cheapest choice in the options field. Every item MUST have a real
+nonzero price you have actually seen displayed. If a price is not shown
+in the menu listing, open that item once to read its true price, then
+close the dialog without adding it. Skip any item whose price you cannot
+verify or that displays as 0.00. Never invent or round names or prices.
+Record the menu section each item appears under.
+""".strip()
     return f"""
 You are cataloging an online ordering page so software can order from it
 later. The page is {url}. Do NOT sign in, do NOT add anything to a cart,
@@ -131,23 +161,11 @@ Delivery fulfillment are offered. If ordering is unavailable (closed,
 broken page, unsupported region, or a captcha you cannot pass), return
 ordering_available=false with the exact blocker text and no products.
 
-Then build a catalog of {count} inexpensive, currently orderable items,
-each ideally under {max_price:.2f} in the local currency. Do NOT
-exhaustively enumerate the menu: take the first {count} suitable items
-you can verify, ideally all from one or two sections, and stop. Prefer
-simple items that can be added with one click and no required choices:
-sides, sauces, dressings, drinks, desserts, small add-ons. If an item
-requires a selection (size, flavor), either skip it or record the
-cheapest choice in the options field. Every item MUST have a real
-nonzero price you have actually seen displayed. If a price is not shown
-in the menu listing, open that item once to read its true price, then
-close the dialog without adding it. Skip any item whose price you cannot
-verify or that displays as 0.00. Never invent or round names or prices.
-Record the menu section each item appears under.
+{catalog_task}
 
-For every item return: position 1..{count}, exact item name, section,
-short description if shown (else empty), options (or empty), package
-quantity 1, exact price, and the three-letter currency code.
+For every item return: position (1..N in menu order), exact item name,
+section, short description if shown (else empty), options (or empty),
+package quantity 1, exact price, and the three-letter currency code.
 """.strip()
 
 
@@ -164,6 +182,11 @@ def main() -> None:
     )
     parser.add_argument("--count", type=int, default=5)
     parser.add_argument("--max-price", type=float, default=15.0)
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Enumerate the whole menu at depth one instead of a small sample",
+    )
     parser.add_argument("--output-dir", type=Path, default=RUNTIME / "catalogs")
     parser.add_argument("--sessions-dir", type=Path, default=RUNTIME / "sessions")
     parser.add_argument("--log-file", type=Path, default=RUNTIME / "logs/app.log")
@@ -173,7 +196,7 @@ def main() -> None:
 
     if not os.environ.get("HAI_API_KEY"):
         parser.error("HAI_API_KEY is not set; let direnv load this project first")
-    if not 1 <= args.count <= 10:
+    if not args.full and not 1 <= args.count <= 10:
         parser.error("--count must be between 1 and 10")
 
     if args.refresh:
@@ -187,6 +210,8 @@ def main() -> None:
             parser.error("mcmaster catalogs are refreshed by prepare_purchase.py")
         url = merchant.start_url
         nickname = merchant.nickname
+        if merchant.catalog_mode == "full":
+            args.full = True
     else:
         if not args.url:
             parser.error("--url is required unless --refresh is used")
@@ -285,9 +310,9 @@ def main() -> None:
         network={} if args.proxy == "false" else None,
         answer_schema=MerchantMenu,
         tools=tools,
-        messages=onboarding_message(url, args.count, args.max_price),
-        max_steps=25,
-        max_time_s=300,
+        messages=onboarding_message(url, args.count, args.max_price, args.full),
+        max_steps=45 if args.full else 25,
+        max_time_s=540 if args.full else 300,
     )
     snapshot = session.get()
     record_timing("h-session-created", h_session_id=session.id)
@@ -303,7 +328,9 @@ def main() -> None:
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             waiter = executor.submit(
-                session.wait_for_completion, timeout_seconds=330, tools=tools
+                session.wait_for_completion,
+                timeout_seconds=570 if args.full else 330,
+                tools=tools,
             )
             for event in session.stream():
                 print_live_event(event)
@@ -385,6 +412,7 @@ def main() -> None:
         fulfillment=fulfillment,
         requires_login=False,
         catalog_short_name=nickname,
+        catalog_mode="full" if args.full else "sample",
     )
     save_merchant(merchant)
 

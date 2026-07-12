@@ -28,6 +28,7 @@ class Merchant(BaseModel):
     fulfillment: str = Field(default="pickup", pattern=r"^(pickup|shipping)$")
     requires_login: bool = False
     catalog_short_name: str = Field(min_length=1)
+    catalog_mode: str = Field(default="sample", pattern=r"^(sample|full)$")
 
     def catalog_glob(self) -> str:
         return f"*-{self.catalog_short_name}.json"
