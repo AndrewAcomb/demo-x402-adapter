@@ -122,7 +122,11 @@ def write_address_file(order: dict[str, str], directory: Path) -> Path:
         "state": shipping["state"],
         "postal_code": shipping["zip"],
         "country": shipping.get("country", "US"),
-        "email": order.get("email", ""),
+        # Never forward the buyer's email into the browser flow: McMaster's
+        # checkout email is the (read-only) account email, and telling the
+        # agent a different one makes it fight an uneditable field. The buyer
+        # email stays on the order record for receipts/support only.
+        "email": "",
         "phone": "",
     }
     path = directory / "order-address.json"

@@ -105,7 +105,9 @@ app.get('/', (c) =>
         description:
           'Buy a product. Returns a 402 x402 challenge; retry with payment to receive ' +
           'an order_id. Body: { quantity?, email?, shipping: { name, address_1, ' +
-          'address_2?, city, state, zip, country? }, gift_note?, dry_run? }.',
+          'address_2?, city, state, zip, country? }, gift_note?, dry_run? }. ' +
+          'email is optional and used for order records only — it is NOT entered at ' +
+          'the merchant; omit it unless you want it on file.',
       },
       {
         method: 'GET',
@@ -243,7 +245,6 @@ app.use(
             bodyType: 'json',
             input: {
               quantity: 1,
-              email: 'buyer@example.com',
               shipping: {
                 name: 'Jane Doe',
                 address_1: '123 Main St',
