@@ -34,6 +34,7 @@ import json
 import os
 import time
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 
@@ -94,7 +95,13 @@ def get_job(job_id: str) -> dict[str, str]:
 
 
 def x402_price(package_price: float) -> str:
-    return f"${package_price * MARGIN + SHIPPING_BUFFER_USD:.2f}"
+    charge = Decimal(str(package_price)) * Decimal(str(MARGIN)) + Decimal(str(SHIPPING_BUFFER_USD))
+    # Half-up to two decimals, matching scripts/gen-catalog.mjs (JS toFixed).
+    return f"${charge.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}"
+
+
+def merchant_price(package_price: float) -> str:
+    return f"${Decimal(str(package_price)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}"
 
 
 def publish_products(
@@ -126,7 +133,7 @@ def publish_products(
             "name": name,
             "description": str(item.get("description") or name),
             "price_usd": x402_price(package_price),
-            "merchant_price_usd": f"${package_price:.2f}",
+            "merchant_price_usd": merchant_price(package_price),
             "source_url": str(item.get("url") or url),
             "merchant": nickname,
             "onboarded_at": now,
