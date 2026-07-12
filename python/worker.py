@@ -31,6 +31,8 @@ from pathlib import Path
 
 import httpx
 
+from evidence_chain import build_event, evidence_root, screenshot_sha256
+
 REDIS_URL = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 BLOB_TOKEN = os.environ.get("BLOB_READ_WRITE_TOKEN")
@@ -86,17 +88,56 @@ def blob_put(pathname: str, data: bytes, content_type: str = "image/png") -> str
         return None
 
 
-def publish(order_id: str, stage: str, message: str, screenshot_url: str | None = None) -> None:
-    event: dict[str, object] = {
-        "t": datetime.now(UTC).isoformat(timespec="seconds"),
-        "stage": stage,
-        "message": message[:500],
-    }
-    if screenshot_url:
-        event["screenshot_url"] = screenshot_url
-    redis(["RPUSH", f"order:{order_id}:events", json.dumps(event, separators=(",", ":"))])
-    redis(["EXPIRE", f"order:{order_id}:events", 60 * 60 * 24 * 7])
-    redis(["HSET", f"order:{order_id}", "updated_at", event["t"]])
+def publish(
+    order_id: str,
+    stage: str,
+    message: str,
+    screenshot_url: str | None = None,
+    screenshot_hash: str | None = None,
+) -> None:
+    """Append one evidence event without changing the polling list contract.
+
+    The worker is the single writer for an order.  Sequence and predecessor are
+    read from the list itself so worker restarts do not reset the chain.
+    """
+    events_key = f"order:{order_id}:events"
+    seq = int(redis(["LLEN", events_key]) or 0)
+    previous_hash = evidence_root(order_id)
+    if seq:
+        previous_raw = redis(["LINDEX", events_key, -1])
+        try:
+            previous_event = json.loads(str(previous_raw))
+            candidate = previous_event.get("event_hash")
+            if isinstance(candidate, str):
+                previous_hash = candidate
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # A legacy or malformed prefix makes full-chain verification
+            # unavailable, but must never prevent fulfillment progress.
+            pass
+    event = build_event(
+        order_id=order_id,
+        seq=seq,
+        timestamp=datetime.now(UTC).isoformat(timespec="seconds"),
+        stage=stage,
+        message=message,
+        previous_hash=previous_hash,
+        screenshot_url=screenshot_url,
+        screenshot_hash=screenshot_hash,
+    )
+    redis(["RPUSH", events_key, json.dumps(event, ensure_ascii=False, separators=(",", ":"))])
+    redis(["EXPIRE", events_key, 60 * 60 * 24 * 7])
+    redis(
+        [
+            "HSET",
+            f"order:{order_id}",
+            "updated_at",
+            event["t"],
+            "evidence_head",
+            event["event_hash"],
+            "evidence_count",
+            seq + 1,
+        ]
+    )
 
 
 def set_status(order_id: str, status: str, result: dict | None = None) -> None:
@@ -225,9 +266,18 @@ def handle_order(order_id: str) -> None:
                 checkpoint = match.group(1) or "final-state"
                 png = Path(match.group(2))
                 url = None
+                content_hash = None
                 if png.is_file():
-                    url = blob_put(f"orders/{order_id}/{png.name}", png.read_bytes())
-                publish(order_id, "checkpoint", checkpoint, screenshot_url=url)
+                    png_bytes = png.read_bytes()
+                    content_hash = screenshot_sha256(png_bytes)
+                    url = blob_put(f"orders/{order_id}/{png.name}", png_bytes)
+                publish(
+                    order_id,
+                    "checkpoint",
+                    checkpoint,
+                    screenshot_url=url,
+                    screenshot_hash=content_hash,
+                )
                 continue
 
             match = STATE_LINE.search(line)

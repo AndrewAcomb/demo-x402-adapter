@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:proof": "tsx scripts/verify-evidence.ts"
   },
   "dependencies": {
     "@coinbase/x402": "^2.1.0",

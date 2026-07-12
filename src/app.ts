@@ -19,6 +19,8 @@ import { getProduct, listProducts } from './catalog.js';
 import { PurchaseBody, type OrderResponse } from './schemas.js';
 import { enqueueFulfillment, getFulfillment } from './fulfillment.js';
 import { FINAL_STATUSES, createOrder, getOrder, getOrderEvents, ordersConfigured } from './orders.js';
+import { evidenceReceipt, verifyEvidenceChain } from './proof.js';
+import { renderProofStoryboard } from './proof-view.js';
 
 const NETWORK = (process.env.X402_NETWORK ?? 'eip155:84532') as Network;
 const PAY_TO = process.env.X402_PAY_TO as `0x${string}` | undefined;
@@ -121,6 +123,13 @@ app.get('/', (c) =>
           '(status ready_to_place or placed) or "failure" (status failed, only after ' +
           'all retries are exhausted).',
       },
+      {
+        method: 'GET',
+        path: '/orders/{order_id}/proof',
+        description:
+          'Verify and download the free tamper-evident H computer-use evidence chain. ' +
+          'Use /orders/{order_id}/proof/view for the visual checkout storyboard.',
+      },
     ],
     dry_run:
       'Purchases are REAL by default: fulfillment places the merchant order and the ' +
@@ -193,6 +202,58 @@ app.get('/orders/:orderId', async (c) => {
     status: 'queued' as const,
     created_at: intent.created_at,
   });
+});
+
+/** Full-chain verification artifact. Always reads from event zero, independent
+ * of the incremental polling cursor, and never fetches remote screenshot URLs. */
+app.get('/orders/:orderId/proof', async (c) => {
+  if (!ordersConfigured) {
+    return c.json({ error: 'evidence_store_unavailable' }, 503);
+  }
+  const orderId = c.req.param('orderId');
+  const order = await getOrder(orderId);
+  if (!order) return c.json({ error: 'not_found' }, 404);
+  const events = await getOrderEvents(orderId, 0);
+  const verification = await verifyEvidenceChain(orderId, events, {
+    head: order.evidence_head,
+    eventCount: order.evidence_count,
+  });
+  const receipt = await evidenceReceipt(order, verification);
+  if (c.req.query('download') === '1') {
+    c.header('Content-Disposition', `attachment; filename="order-${orderId}-proof.json"`);
+  }
+  return c.json({
+    receipt,
+    proof: verification,
+    events,
+    storyboard_url: `/orders/${encodeURIComponent(orderId)}/proof/view`,
+    limitations: [
+      'This SHA-256 chain detects event modification, deletion, and reordering relative to a saved root/head.',
+      'It is not a signature, trusted timestamp, blockchain commitment, or third-party attestation.',
+      'Screenshot hashes commit to locally captured bytes; this endpoint does not re-fetch public blobs.',
+    ],
+  });
+});
+
+/** Demo-facing HTML presentation of the same evidence returned by /proof. */
+app.get('/orders/:orderId/proof/view', async (c) => {
+  if (!ordersConfigured) return c.html('Evidence store unavailable.', 503);
+  const orderId = c.req.param('orderId');
+  const order = await getOrder(orderId);
+  if (!order) return c.html('Order not found.', 404);
+  const events = await getOrderEvents(orderId, 0);
+  const verification = await verifyEvidenceChain(orderId, events, {
+    head: order.evidence_head,
+    eventCount: order.evidence_count,
+  });
+  const receipt = await evidenceReceipt(order, verification);
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+  );
+  return c.html(
+    renderProofStoryboard(order, events, verification, String(receipt.receipt_hash)),
+  );
 });
 
 // Client-compat shim: our payment middleware emits the 402 challenge only in

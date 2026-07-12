@@ -52,6 +52,9 @@ export interface OrderRecord {
   email?: string;
   /** Final structured result from the fulfillment run, when present. */
   result?: unknown;
+  /** Redundant list anchor used to detect truncation when the order hash survives. */
+  evidence_head?: string;
+  evidence_count?: number;
 }
 
 export interface OrderEvent {
@@ -60,6 +63,11 @@ export interface OrderEvent {
   stage: string;
   message: string;
   screenshot_url?: string;
+  screenshot_sha256?: string;
+  evidence_version?: string;
+  order_id?: string;
+  previous_hash?: string;
+  event_hash?: string;
 }
 
 export async function createOrder(
@@ -103,6 +111,8 @@ export async function getOrder(orderId: string): Promise<OrderRecord | undefined
     shipping: h.shipping ? JSON.parse(h.shipping) : undefined,
     email: h.email || undefined,
     result: h.result ? JSON.parse(h.result) : undefined,
+    evidence_head: h.evidence_head || undefined,
+    evidence_count: h.evidence_count === undefined ? undefined : Number(h.evidence_count),
   };
 }
 

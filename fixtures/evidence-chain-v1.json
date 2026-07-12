@@ -1,0 +1,28 @@
+{
+  "order_id": "demo-order-π-001",
+  "root": "0a843b35c23c1fa9896630255f16bb6d185d28ff825b5a12195a636453d87220",
+  "events": [
+    {
+      "evidence_version": "buywith402/evidence-chain/v1",
+      "order_id": "demo-order-π-001",
+      "seq": 0,
+      "t": "2026-07-12T08:00:00+00:00",
+      "stage": "worker",
+      "message": "Fulfillment started.",
+      "previous_hash": "0a843b35c23c1fa9896630255f16bb6d185d28ff825b5a12195a636453d87220",
+      "event_hash": "a9ecf1a1b0a18e7f0f84b103a4c5dd2cb0379caa8894547abe41665d516ccfdb"
+    },
+    {
+      "evidence_version": "buywith402/evidence-chain/v1",
+      "order_id": "demo-order-π-001",
+      "seq": 1,
+      "t": "2026-07-12T08:00:04+00:00",
+      "stage": "checkpoint",
+      "message": "place-order-review",
+      "previous_hash": "a9ecf1a1b0a18e7f0f84b103a4c5dd2cb0379caa8894547abe41665d516ccfdb",
+      "screenshot_url": "https://example.test/review.png",
+      "screenshot_sha256": "b70afcbb48339163dd19430809ca06607e284574c00d7abb6d1cfa5f32dea8b2",
+      "event_hash": "e3a88768f408b88d04dc2e62af0509430089f413c580012da9cdb326720ed93d"
+    }
+  ]
+}
