@@ -500,6 +500,9 @@ def main() -> None:
     latest_image_index = 0
     image_lock = Lock()
     captured_checkpoints: set[str] = set()
+    reviewed_part_number: str | None = None
+    reviewed_quantity: int | None = None
+    reviewed_total: Decimal | None = None
     purchase_authorized = False
     authorized_part_number: str | None = None
     authorized_total: Decimal | None = None
@@ -516,8 +519,14 @@ def main() -> None:
         context_parts.append("PLACE ORDER")
     workflow_context = "  ·  ".join(context_parts)
 
-    def capture_checkout_checkpoint(checkpoint: str) -> str:
+    def capture_checkout_checkpoint(
+        checkpoint: str,
+        visible_part_number: str | None = None,
+        visible_quantity: int | None = None,
+        visible_total_usd: float | None = None,
+    ) -> str:
         """Save the current browser screenshot at a named checkout checkpoint."""
+        nonlocal reviewed_part_number, reviewed_quantity, reviewed_total
         if checkpoint not in CHECKPOINTS:
             allowed = ", ".join(CHECKPOINTS)
             raise ValueError(f"Unknown checkpoint {checkpoint!r}; expected one of: {allowed}")
@@ -531,6 +540,33 @@ def main() -> None:
                 component="Screenshot",
             )
             raise RuntimeError("No browser screenshot is available for this checkpoint")
+        if checkpoint == "place-order-review":
+            if (
+                not visible_part_number
+                or visible_quantity is None
+                or visible_total_usd is None
+            ):
+                raise RuntimeError(
+                    "Review checkpoint requires visible part number, quantity, and total"
+                )
+            normalized_part = visible_part_number.strip().upper()
+            if part_number is not None and normalized_part != part_number.upper():
+                raise RuntimeError("Review part number does not match selected product")
+            if visible_quantity != 1:
+                raise RuntimeError("Review package quantity must be exactly 1")
+            total = Decimal(str(visible_total_usd))
+            if total <= 0 or total > Decimal(str(args.max_total)):
+                raise RuntimeError(
+                    f"Review total is outside the authorized USD 0-{args.max_total:.2f} range"
+                )
+            reviewed_part_number = normalized_part
+            reviewed_quantity = visible_quantity
+            reviewed_total = total
+        elif any(
+            value is not None
+            for value in (visible_part_number, visible_quantity, visible_total_usd)
+        ):
+            raise RuntimeError("Visible order facts belong only on the review checkpoint")
         path = artifact_dir / f"{artifact_prefix}-{CHECKPOINTS[checkpoint]}.png"
         save_image(image, path)
         stamp_provenance(
@@ -546,6 +582,15 @@ def main() -> None:
             checkpoint,
             artifact=path.name,
             image_event_index=image_index,
+            **(
+                {
+                    "part_number": reviewed_part_number,
+                    "quantity": reviewed_quantity,
+                    "total_usd": float(reviewed_total),
+                }
+                if checkpoint == "place-order-review" and reviewed_total is not None
+                else {}
+            ),
         )
         local_banner(
             f"{demo_session_id}: SAVED CHECKPOINT {checkpoint} TO {path.resolve()}",
@@ -572,15 +617,19 @@ def main() -> None:
                     "Place Order cannot be authorized before the review checkpoint"
                 )
             normalized_part = visible_part_number.upper()
-            if part_number is not None and normalized_part != part_number.upper():
-                raise RuntimeError("Visible part number does not match selected product")
-            if visible_quantity != 1:
-                raise RuntimeError("Visible package quantity must be exactly 1")
+            if (
+                reviewed_part_number is None
+                or reviewed_quantity is None
+                or reviewed_total is None
+            ):
+                raise RuntimeError("Verified review facts are unavailable")
+            if normalized_part != reviewed_part_number:
+                raise RuntimeError("Authorization part number does not match verified review")
+            if visible_quantity != reviewed_quantity:
+                raise RuntimeError("Authorization quantity does not match verified review")
             total = Decimal(str(visible_total_usd))
-            if total <= 0 or total > Decimal(str(args.max_total)):
-                raise RuntimeError(
-                    f"Visible total is outside the authorized USD 0-{args.max_total:.2f} range"
-                )
+            if total != reviewed_total:
+                raise RuntimeError("Authorization total does not match verified review")
             purchase_authorized = True
             authorized_part_number = normalized_part
             authorized_total = total
@@ -684,7 +733,9 @@ Let shipping, tax, and total recalculate. If total exceeds USD
 {args.max_total:.2f}, return success=false and stop. The target is the Current
 Order review with the item, delivery summary, masked payment, totals, and green
 PLACE ORDER button visible. ABSOLUTELY DO NOT CLICK PLACE ORDER. Call
-capture_checkout_checkpoint(checkpoint="place-order-review") before answering.
+capture_checkout_checkpoint(checkpoint="place-order-review",
+visible_part_number="<exact visible part number>", visible_quantity=1,
+visible_total_usd=<final numeric USD total>) before answering.
 """.strip()
         if args.place_order:
             required_checkpoints.add("order-confirmed")
@@ -873,16 +924,25 @@ including order_confirmed, must be true or false, never null.
     output["request_id"] = request_id
     output["h_session_id"] = session.id
     output["captured_checkpoints"] = sorted(captured_checkpoints)
+    if reviewed_part_number is not None:
+        output["part_number"] = reviewed_part_number
+        output["review_facts"] = {
+            "part_number": reviewed_part_number,
+            "quantity": reviewed_quantity,
+            "total_usd": float(reviewed_total) if reviewed_total is not None else None,
+        }
     result_path = artifact_dir / f"{artifact_prefix}-result.json"
     result_path.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
     result_path.chmod(0o600)
     print(json.dumps(output, indent=2), flush=True)
     parsed_total = parse_usd(result.answer.order_total)
+    effective_part_number = result.answer.part_number or reviewed_part_number
+    effective_total = parsed_total or reviewed_total
     product_matches = (
         not do_add
         or part_number is not None
-        and result.answer.part_number is not None
-        and result.answer.part_number.upper() == part_number.upper()
+        and effective_part_number is not None
+        and effective_part_number.upper() == part_number.upper()
     )
     if args.place_order:
         purchase_state_valid = (
@@ -890,9 +950,9 @@ including order_confirmed, must be true or false, never null.
             and result.answer.place_order_clicked
             and result.answer.order_confirmed
             and bool(result.answer.order_number)
-            and result.answer.part_number is not None
-            and authorized_part_number == result.answer.part_number.upper()
-            and authorized_total == parsed_total
+            and effective_part_number is not None
+            and authorized_part_number == effective_part_number.upper()
+            and authorized_total == effective_total
         )
     else:
         purchase_state_valid = (
@@ -902,8 +962,8 @@ including order_confirmed, must be true or false, never null.
         )
     checkout_valid = (
         not do_checkout
-        or parsed_total is not None
-        and parsed_total <= Decimal(str(args.max_total))
+        or effective_total is not None
+        and effective_total <= Decimal(str(args.max_total))
     )
     run_succeeded = not (
         not result.answer.success
