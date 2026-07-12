@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from h_browser_runtime import HBrowserRuntime
 from email_2fa import ImapCodeReader
-from structured_logging import configure_structured_output, log_output
+from structured_logging import configure_structured_output, console, log_output
 
 
 START_URL = (
@@ -53,12 +53,26 @@ def local_banner(
     message: str,
     color: str = LOCAL_BANNER,
     component: str = "LLOCALL",
+    console_text: str | None = None,
+    console_link: tuple[str, str] | None = None,
 ) -> None:
+    """Log a milestone banner; mirror it (or console_text) to the demo console.
+
+    console_text="" suppresses the console mirror entirely; console_link
+    appends an OSC 8 hyperlink as ("label", target).
+    """
     del color
     log_output(
         f"========== [LLOCALL] LOCAL MAC: {message} ==========",
         component=component,
     )
+    text = message if console_text is None else console_text
+    if text == "" and console_link is None:
+        return
+    if console_link is not None:
+        console.key(text, link_label=console_link[0], link_target=console_link[1])
+    else:
+        console.key(text)
 
 
 class Screw(BaseModel):
@@ -140,8 +154,9 @@ def print_live_event(event: object) -> None:
     data = payload.get("data") or {}
     if event_type == "ActiveStateChangeEvent":
         log_output(f"[state] {data.get('state')}", component="HHStream")
+        console.status(str(data.get("state") or ""))
         if data.get("state") == "awaiting_tool_results":
-            local_banner("H PAUSED — LOCAL TOOL CALLBACK REQUESTED")
+            local_banner("H PAUSED — LOCAL TOOL CALLBACK REQUESTED", console_text="")
     elif event_type == "AgentStartedEvent":
         log_output("[agent] started", component="HHStream")
     elif event_type == "AgentCompletionEvent":
@@ -166,6 +181,7 @@ def print_live_event(event: object) -> None:
                 f"{metadata.get('url') or 'unknown URL'}",
                 component="HHStream",
             )
+            console.status(f"on: {metadata.get('title') or 'untitled'}")
         elif kind == "policy_event":
             if data.get("content"):
                 log_output(
@@ -181,6 +197,7 @@ def print_live_event(event: object) -> None:
                 log_output(
                     f"[action] {name} {compact(args)}", component="HHStream"
                 )
+                console.status(f"action: {name}")
         elif kind == "tool_result":
             request = data.get("tool_req") or {}
             tool_name = request.get("tool_name", "tool")
@@ -201,7 +218,7 @@ def print_live_event(event: object) -> None:
             )
         elif kind == "error_event":
             log_output(
-                f"[step error] {compact(data.get('error'))}",
+                f"[step error] {compact(data, 2_000)}",
                 component="HHStream",
                 level=logging.ERROR,
             )
@@ -378,6 +395,11 @@ screw family that does.
     print(f"H session: {session.id}", flush=True)
     print(f"H Agent View: {snapshot.agent_view_url}", flush=True)
     print("Streaming McMaster catalog discovery...", flush=True)
+    console.key(
+        f"H session {session.id[:8]} started",
+        link_label="watch live agent view",
+        link_target=snapshot.agent_view_url,
+    )
     with ThreadPoolExecutor(max_workers=1) as executor:
         waiter = executor.submit(
             session.wait_for_completion,
@@ -412,6 +434,10 @@ screw family that does.
     print("\nValidated catalog:")
     print(rendered)
     print(f"\nSaved to {output_path.resolve()}")
+    console.stop(
+        f"✓ catalog refreshed — {len(result.answer.products)} products · "
+        + hyperlink("[catalog json]", output_path)
+    )
 
 
 if __name__ == "__main__":

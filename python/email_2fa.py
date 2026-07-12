@@ -25,6 +25,10 @@ CODE_PATTERNS = (
     re.compile(
         r"(?i)\b(?:code|passcode|OTP)\s*(?:is|:|-)?\s*\b([A-Z0-9]{4,10})\b"
     ),
+    re.compile(
+        r"(?i)\b(\d{4,10})\b\s+is your\b.{0,60}?"
+        r"\b(?:code|passcode|password|OTP)\b"
+    ),
 )
 HTML_TAG = re.compile(r"<[^>]+>")
 

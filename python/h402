@@ -12,6 +12,7 @@ from pathlib import Path
 
 from add_cached_to_cart import AddressBook, describe_catalog, newest_catalog
 from email_2fa import ImapCodeReader
+from merchants import get_merchant, load_registry
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21,26 +22,29 @@ RUNTIME_SUBDIRECTORIES = ("catalogs", "sessions", "logs", "private", "legacy")
 
 HELP = """Usage:
   ./h402 doctor [--online]
-  ./h402 catalog refresh
-  ./h402 catalog list
-  ./h402 cart reset
+  ./h402 merchant onboard <https-url> [--nickname NAME] [--count N] [--max-price P]
+  ./h402 merchant list
+  ./h402 catalog refresh [--merchant NAME]
+  ./h402 catalog list [--merchant NAME]
+  ./h402 catalog show [--merchant NAME]
+  ./h402 cart reset [--merchant NAME]
   ./h402 cart [reset|noreset] add <product-id|-i> [checkout <address-id|-i>]
-      [--place-order] [--resume]
-  ./h402 checkout <address-id|-i> [--place-order] [--resume]
+      [--place-order] [--resume] [--merchant NAME]
+  ./h402 checkout <address-id|-i> [--place-order] [--resume] [--merchant NAME]
   ./h402 profile open|publish
   ./h402 logs [--local]
 
 Global browser options:
   --proxy true|false          Use the configured proxy (default: true)
   --h-environment env1        Configured H environment (default: profile state)
+  --merchant NAME             Registered merchant nickname (default: mcmaster)
 
 Examples:
-  ./h402 cart add -i
+  ./h402 merchant onboard 'https://www.toasttab.com/local/order/littlestar...' \\
+      --nickname littlestar
+  ./h402 cart add -i --merchant littlestar
   ./h402 cart add mcmaster:92224A112
-  ./h402 checkout -i
-  ./h402 cart reset add -i checkout -i
-  ./h402 cart reset add 92224A112 checkout 1
-  ./h402 cart noreset add 92224A112 checkout 1
+  ./h402 cart reset add -i checkout -i --merchant littlestar
   ./h402 cart add 92224A112 checkout 1 --place-order
   ./h402 cart noreset add 92224A112 --resume
 
@@ -70,15 +74,17 @@ def selector_argument(
     return [interactive_flag] if value == "-i" else [value_flag, value]
 
 
-def extract_browser_options(tokens: list[str]) -> tuple[list[str], list[str]]:
-    """Extract position-independent browser options into canonical argv form."""
+def extract_browser_options(
+    tokens: list[str],
+) -> tuple[list[str], list[str], str | None]:
+    """Extract position-independent browser/merchant options into argv form."""
     cleaned: list[str] = []
     extracted: dict[str, str] = {}
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in {"--proxy", "--h-environment", "--environment"}:
-            canonical = "--h-environment" if token != "--proxy" else token
+        if token in {"--proxy", "--h-environment", "--environment", "--merchant"}:
+            canonical = "--h-environment" if token == "--environment" else token
             if canonical in extracted:
                 fail(f"{canonical} may be specified only once")
             if index + 1 >= len(tokens):
@@ -95,10 +101,14 @@ def extract_browser_options(tokens: list[str]) -> tuple[list[str], list[str]]:
     for name in ("--proxy", "--h-environment"):
         if name in extracted:
             arguments.extend((name, extracted[name]))
-    return cleaned, arguments
+    return cleaned, arguments, extracted.get("--merchant")
 
 
-def parse_workflow(tokens: list[str]) -> None:
+def parse_workflow(tokens: list[str], merchant_nickname: str) -> None:
+    try:
+        merchant = get_merchant(merchant_nickname)
+    except KeyError as exc:
+        fail(str(exc))
     explicit_reset = False
     no_reset = False
     product: str | None = None
@@ -126,7 +136,7 @@ def parse_workflow(tokens: list[str]) -> None:
                     fail("checkout may appear only once")
                 recipient = value
             index += 2
-        elif token in {"--max-total", "--proxy", "--h-environment"}:
+        elif token in {"--max-total", "--proxy", "--h-environment", "--merchant"}:
             if index + 1 >= len(tokens):
                 fail(f"{token} requires a value")
             passthrough.extend((token, tokens[index + 1]))
@@ -151,11 +161,14 @@ def parse_workflow(tokens: list[str]) -> None:
     if "--place-order" in passthrough and recipient is None:
         fail("--place-order requires checkout <address-id|-i>")
     if product is not None and not any(
-        (RUNTIME / "catalogs").glob("*-mcmaster-screws.json")
+        (RUNTIME / "catalogs").glob(merchant.catalog_glob())
     ):
-        fail("no cached catalog; run `./h402 catalog refresh` first")
+        fail(
+            f"no cached catalog for {merchant.nickname}; run "
+            f"`./h402 catalog refresh --merchant {merchant.nickname}` first"
+        )
 
-    arguments = passthrough
+    arguments = [*passthrough, "--merchant", merchant.nickname]
     if product is None:
         arguments.extend(("--skip-add", "--no-reset"))
     else:
@@ -171,21 +184,57 @@ def parse_workflow(tokens: list[str]) -> None:
     run_script("add_cached_to_cart.py", arguments)
 
 
-def catalog_list() -> None:
+def catalog_list(merchant_nickname: str | None) -> None:
     catalog_dir = RUNTIME / "catalogs"
-    catalogs = sorted(catalog_dir.glob("*-mcmaster-screws.json"))
-    if not catalogs:
+    merchants = load_registry()
+    if merchant_nickname is not None:
+        if merchant_nickname not in merchants:
+            fail(f"unknown merchant {merchant_nickname!r}")
+        merchants = {merchant_nickname: merchants[merchant_nickname]}
+    printed = 0
+    for nickname, merchant in sorted(merchants.items()):
+        catalogs = sorted(catalog_dir.glob(merchant.catalog_glob()))
+        if not catalogs:
+            continue
+        active = newest_catalog(catalog_dir, merchant.catalog_glob())
+        for path in reversed(catalogs):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            marker = "*" if path == active else " "
+            count = len(payload.get("products", []))
+            description = describe_catalog(path).replace("\nTimestamp: ", " — ")
+            print(f"{marker} [{nickname}] {description} — {count} products")
+            printed += 1
+    if not printed:
         raise SystemExit(
             f"No catalogs found under {catalog_dir}. Run `./h402 catalog refresh`."
         )
-    active = newest_catalog(catalog_dir)
-    for path in reversed(catalogs):
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        marker = "*" if path == active else " "
-        count = len(payload.get("products", []))
-        description = describe_catalog(path).replace("\nTimestamp: ", " — ")
-        print(f"{marker} {description} — {count} products")
-    print("\n* active catalog used by cart add")
+    print("\n* active catalog per merchant used by cart add")
+
+
+def catalog_show(merchant_nickname: str | None) -> None:
+    merchant = get_merchant(merchant_nickname or "mcmaster")
+    path = newest_catalog(RUNTIME / "catalogs", merchant.catalog_glob())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    print(describe_catalog(path))
+    for index, item in enumerate(payload.get("products", []), start=1):
+        section = str(item.get("section") or "").strip()
+        options = str(item.get("options") or "").strip()
+        extras = "".join(
+            f"  [{text}]" for text in (section, options) if text
+        )
+        print(
+            f" {index:2d}. {item['part_number']}  "
+            f"{item['currency']} {float(item['package_price']):.2f}  "
+            f"{item['description']}{extras}"
+        )
+
+
+def merchant_list() -> None:
+    for nickname, merchant in sorted(load_registry().items()):
+        print(
+            f"{nickname:14} {merchant.kind:9} {merchant.fulfillment:9} "
+            f"{merchant.display_name} — {merchant.start_url}"
+        )
 
 
 def doctor(online: bool) -> None:
@@ -202,7 +251,7 @@ def doctor(online: bool) -> None:
     checks = {
         "environment variables": not missing,
         "address book": (RUNTIME / "private/addresses.json").is_file(),
-        "catalog": any((RUNTIME / "catalogs").glob("*-mcmaster-screws.json")),
+        "catalog": any((RUNTIME / "catalogs").glob("*.json")),
         "profile state": (ROOT / "profile-state.json").is_file(),
     }
     if checks["address book"]:
@@ -232,7 +281,7 @@ def doctor(online: bool) -> None:
 def main() -> None:
     ensure_runtime_layout()
     tokens = sys.argv[1:]
-    tokens, browser_options = extract_browser_options(tokens)
+    tokens, browser_options, merchant_nickname = extract_browser_options(tokens)
     if not tokens or tokens[0] in {"-h", "--help", "help"}:
         print(HELP)
         return
@@ -251,7 +300,7 @@ def main() -> None:
         rest.extend(browser_options)
         if resume_requested:
             rest.append("--resume")
-        parse_workflow(rest)
+        parse_workflow(rest, merchant_nickname or "mcmaster")
         return
     elif command == "checkout":
         if not rest:
@@ -259,17 +308,45 @@ def main() -> None:
         rest.extend(browser_options)
         if resume_requested:
             rest.append("--resume")
-        parse_workflow(["checkout", *rest])
+        parse_workflow(["checkout", *rest], merchant_nickname or "mcmaster")
         return
+    elif command == "merchant":
+        if rest[:1] == ["onboard"]:
+            if len(rest) < 2 or rest[1].startswith("-"):
+                fail("merchant onboard requires an https URL")
+            url, extra = rest[1], rest[2:]
+            arguments = ["--url", url, *extra, *browser_options]
+            if merchant_nickname:
+                arguments.extend(("--nickname", merchant_nickname))
+            run_script("onboard_merchant.py", arguments)
+        elif rest == ["list"]:
+            merchant_list()
+        else:
+            fail("merchant requires onboard <url> or list")
     elif command == "catalog":
         if rest == ["refresh"]:
-            run_script("prepare_purchase.py", browser_options)
+            if merchant_nickname in (None, "mcmaster"):
+                run_script("prepare_purchase.py", browser_options)
+            else:
+                run_script(
+                    "onboard_merchant.py",
+                    [
+                        "--refresh",
+                        "--nickname",
+                        merchant_nickname,
+                        *browser_options,
+                    ],
+                )
         elif rest == ["list"]:
             if browser_options:
                 fail("browser options do not apply to catalog list")
-            catalog_list()
+            catalog_list(merchant_nickname)
+        elif rest == ["show"]:
+            if browser_options:
+                fail("browser options do not apply to catalog show")
+            catalog_show(merchant_nickname)
         else:
-            fail("catalog requires refresh or list")
+            fail("catalog requires refresh, list, or show")
     elif command == "profile":
         if browser_options:
             fail("browser options do not apply to profile management")

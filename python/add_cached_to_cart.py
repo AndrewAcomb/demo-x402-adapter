@@ -8,6 +8,7 @@ import base64
 import json
 import os
 import re
+import sys
 import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +25,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from email_2fa import ImapCodeReader
 from h_browser_runtime import HBrowserRuntime, proxy_verification_instruction
+from merchants import get_merchant
+from sms_2fa import TwilioSmsReader
+from structured_logging import console
 from prepare_purchase import (
     LOCAL_FAILURE,
     LOCAL_SUCCESS,
@@ -102,10 +106,14 @@ CHECKPOINTS = {
 CATALOG_TIMESTAMP = re.compile(r"^\d{3}-(\d{8}T\d{6}Z)-")
 
 
-def newest_catalog(output_dir: Path) -> Path:
-    catalogs = sorted(output_dir.glob("*-mcmaster-screws.json"))
+def newest_catalog(
+    output_dir: Path, pattern: str = "*-mcmaster-screws.json"
+) -> Path:
+    catalogs = sorted(output_dir.glob(pattern))
     if not catalogs:
-        raise FileNotFoundError(f"No cached McMaster catalogs found in {output_dir}")
+        raise FileNotFoundError(
+            f"No cached catalogs matching {pattern!r} found in {output_dir}"
+        )
     return catalogs[-1]
 
 
@@ -171,10 +179,13 @@ def allocate_demo_request(
 
 
 def choose_product(
-    products: list[dict[str, object]], interactive: bool, selector: str | None = None
+    products: list[dict[str, object]],
+    interactive: bool,
+    selector: str | None = None,
+    merchant_prefix: str = "mcmaster",
 ) -> dict[str, object]:
     if selector is not None:
-        normalized = selector.removeprefix("mcmaster:").upper()
+        normalized = selector.removeprefix(f"{merchant_prefix}:").upper()
         if selector.isdigit() and 1 <= int(selector) <= len(products):
             return products[int(selector) - 1]
         for product in products:
@@ -346,6 +357,11 @@ def main() -> None:
     parser.add_argument(
         "--address-file", type=Path, default=RUNTIME / "private/addresses.json"
     )
+    parser.add_argument(
+        "--merchant",
+        default="mcmaster",
+        help="Registered merchant nickname (default: mcmaster)",
+    )
     parser.add_argument("--max-total", type=float, default=50.0)
     parser.add_argument(
         "--place-order",
@@ -381,6 +397,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    try:
+        merchant = get_merchant(args.merchant)
+    except KeyError as exc:
+        parser.error(str(exc))
+    is_mcmaster = merchant.kind == "mcmaster"
+
     resume_pointer: dict[str, object] | None = None
     if args.resume:
         if args.proxy != "true":
@@ -391,6 +413,12 @@ def main() -> None:
             resume_pointer = consume_resume_pointer(LAST_SESSION_PATH)
         except Exception as exc:
             parser.error(f"cannot resume: {exc}")
+        pointer_merchant = str(resume_pointer.get("merchant", "mcmaster"))
+        if pointer_merchant != merchant.nickname:
+            parser.error(
+                f"warm session belongs to merchant {pointer_merchant!r}, "
+                f"not {merchant.nickname!r}"
+            )
     else:
         LAST_SESSION_PATH.unlink(missing_ok=True)
 
@@ -405,13 +433,14 @@ def main() -> None:
     catalog_path: Path | None = None
     product: dict[str, object] | None = None
     if do_add:
-        catalog_path = newest_catalog(args.catalog_dir)
+        catalog_path = newest_catalog(args.catalog_dir, merchant.catalog_glob())
         print(f"\n{describe_catalog(catalog_path)}", flush=True)
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         product = choose_product(
             catalog["products"],
             args.interactive or args.interactive_product,
             args.product,
+            merchant_prefix=merchant.nickname,
         )
 
     address: ShippingAddress | None = None
@@ -425,6 +454,17 @@ def main() -> None:
             args.interactive or args.interactive_recipient,
             args.recipient,
         )
+        if merchant.fulfillment == "pickup":
+            missing_contact = [
+                field
+                for field in ("recipient_name", "email", "phone")
+                if not getattr(address, field)
+            ]
+            if missing_contact:
+                parser.error(
+                    f"pickup checkout for {merchant.nickname} requires address-book "
+                    f"fields: {', '.join(missing_contact)}"
+                )
         address_payload = address.model_dump(mode="json")
         for field in ("street1", "street2", "postal_code", "email", "phone"):
             value = address_payload[field]
@@ -470,11 +510,13 @@ def main() -> None:
     local_banner(
         f"{demo_session_id}: ARTIFACTS WILL BE SAVED UNDER {artifact_dir.resolve()}",
         component="CartFlow",
+        console_text="",
+        console_link=(f"{demo_session_id} artifacts", str(artifact_dir.resolve())),
     )
 
     email = os.environ.get("MCMASTER_EMAIL")
     password = os.environ.get("MCMASTER_PASSWORD")
-    if not email or not password:
+    if is_mcmaster and (not email or not password):
         parser.error("MCMASTER_EMAIL and MCMASTER_PASSWORD must be set")
     payment: dict[str, str | None] = {}
     card_name = ""
@@ -506,7 +548,11 @@ def main() -> None:
     purchase_authorized = False
     authorized_part_number: str | None = None
     authorized_total: Decimal | None = None
-    context_parts = ["RESUME" if resume_pointer is not None else "NEW", "CART"]
+    context_parts = [
+        merchant.nickname.upper(),
+        "RESUME" if resume_pointer is not None else "NEW",
+        "CART",
+    ]
     if do_reset:
         context_parts.append("RESET")
     elif do_add:
@@ -596,6 +642,8 @@ def main() -> None:
             f"{demo_session_id}: SAVED CHECKPOINT {checkpoint} TO {path.resolve()}",
             LOCAL_SUCCESS,
             component="Screenshot",
+            console_text="📸",
+            console_link=(f"{checkpoint.replace('-', ' ')} screenshot", str(path)),
         )
         return f"Saved {checkpoint} checkpoint for {demo_session_id}"
 
@@ -649,6 +697,14 @@ def main() -> None:
 
         tools.append(authorize_place_order)
     reader = ImapCodeReader.from_env()
+    if (
+        reader is not None
+        and not is_mcmaster
+        and os.environ.get("EMAIL_2FA_SENDER_FILTER") is None
+    ):
+        # Guest checkouts get codes from arbitrary senders (Toast, Square, …);
+        # the new-mail UID baseline is the real filter.
+        reader.sender_filter = ""
     if reader is not None:
         local_banner("CONNECTING TO PRIVATE EMAIL OVER IMAP", component="Email2FA")
         reader.establish_baseline()
@@ -681,6 +737,69 @@ def main() -> None:
 
         tools.append(wait_for_email_2fa_code)
 
+    if not is_mcmaster:
+
+        def wait_for_operator_sms_code() -> str:
+            """Ask the human operator to type in an SMS verification code."""
+            local_banner(
+                f"{demo_session_id}: H NEEDS THE SMS CODE — TYPE IT BELOW",
+                component="SMS2FA",
+                console_text="⌨️  H is waiting for the SMS code from your phone",
+            )
+            console.pause()
+            terminal = sys.__stdout__
+            terminal.write("\nEnter the SMS verification code for H: ")
+            terminal.flush()
+            code = sys.stdin.readline().strip()
+            console.resume()
+            if not code:
+                raise RuntimeError("Operator entered an empty code")
+            RUNTIME_SECRETS.add(code)
+            local_banner(
+                f"{demo_session_id}: OPERATOR CODE DELIVERED — H RESUMING",
+                LOCAL_SUCCESS,
+                component="SMS2FA",
+            )
+            return code
+
+        tools.append(wait_for_operator_sms_code)
+
+    sms_reader = TwilioSmsReader.from_env() if not is_mcmaster else None
+    if sms_reader is not None:
+        local_banner(
+            f"CONNECTING TO AGENT PHONE NUMBER {sms_reader.number} VIA TWILIO",
+            component="SMS2FA",
+        )
+        sms_reader.establish_baseline()
+        local_banner(
+            "TWILIO READY — NEW-MESSAGE BASELINE RECORDED",
+            LOCAL_SUCCESS,
+            component="SMS2FA",
+        )
+
+        def wait_for_sms_2fa_code(timeout_seconds: int = 180) -> str:
+            """Wait for a new SMS to the agent's phone number and return its code."""
+            local_banner(
+                f"H CALLED SMS TOOL — POLLING TWILIO ({timeout_seconds}s timeout)",
+                component="SMS2FA",
+            )
+            try:
+                code = sms_reader.wait_for_code(timeout_seconds)
+                RUNTIME_SECRETS.add(code)
+                local_banner(
+                    "SMS CODE EXTRACTED — RETURNING IT TO H",
+                    LOCAL_SUCCESS,
+                    component="SMS2FA",
+                )
+                return code
+            except Exception:
+                local_banner(
+                    "SMS 2FA TOOL FAILED", LOCAL_FAILURE, component="SMS2FA"
+                )
+                raise
+
+        tools.append(wait_for_sms_2fa_code)
+
     browser_runtime = HBrowserRuntime.resolve(client, args.h_environment)
     proxy_instruction = (
         proxy_verification_instruction() if args.verify_proxy else ""
@@ -689,10 +808,18 @@ def main() -> None:
     required_checkpoints: set[str] = {"initial-state"}
     if do_reset:
         required_checkpoints.add("cart-cleared")
-        reset_instruction = """
+        if is_mcmaster:
+            reset_instruction = """
 Go to https://www.mcmaster.com/Order/ and DELETE EVERY existing line item.
 Continue until the cart is visibly empty, then call
 capture_checkout_checkpoint(checkpoint="cart-cleared").
+""".strip()
+        else:
+            reset_instruction = f"""
+Open the ordering page {merchant.start_url}. If the site shows a cart
+holding any items, remove every item until the cart is visibly empty. If
+the cart is already empty or no cart indicator exists yet, that satisfies
+this step. Then call capture_checkout_checkpoint(checkpoint="cart-cleared").
 """.strip()
     else:
         reset_instruction = (
@@ -702,12 +829,30 @@ capture_checkout_checkpoint(checkpoint="cart-cleared").
     if do_add:
         assert product is not None and start_url is not None and part_number is not None
         required_checkpoints.add("product-in-cart")
-        add_instruction = f"""
+        if is_mcmaster:
+            add_instruction = f"""
 Open only the direct cached URL {start_url} for durable part {part_number}:
 {product['description']}. Do not search or browse other products. Verify the
 page is exactly part {part_number}, add exactly one package, then return to the
 order page. Verify the cart contains part {part_number} with quantity 1. If
 checkout is also requested, the cart must contain exactly this one line. Call
+capture_checkout_checkpoint(checkpoint="product-in-cart").
+""".strip()
+        else:
+            section = str(product.get("section") or "").strip()
+            options = str(product.get("options") or "").strip()
+            section_hint = f' in menu section "{section}"' if section else ""
+            option_hint = (
+                f' If the item requires a choice, select: {options}.'
+                if options
+                else " If the item unexpectedly requires a choice, pick the cheapest option."
+            )
+            add_instruction = f"""
+On the ordering page {start_url}, locate the exact menu item
+"{part_number}"{section_hint}, expected price around
+{product['currency']} {float(product['package_price']):.2f}. Do not browse
+other items.{option_hint} Add exactly one to the cart. Verify the cart
+contains exactly this one item with quantity 1. Call
 capture_checkout_checkpoint(checkpoint="product-in-cart").
 """.strip()
     elif do_checkout:
@@ -720,7 +865,8 @@ line item with quantity 1 and record its exact part number.
 
     if do_checkout:
         required_checkpoints.add("place-order-review")
-        checkout_instruction = f"""
+        if is_mcmaster:
+            checkout_instruction = f"""
 Fill delivery details exactly as follows:
 {json.dumps(address_payload)}
 Use standard delivery and use the selected recipient name and delivery address
@@ -737,22 +883,56 @@ capture_checkout_checkpoint(checkpoint="place-order-review",
 visible_part_number="<exact visible part number>", visible_quantity=1,
 visible_total_usd=<final numeric USD total>) before answering.
 """.strip()
+        else:
+            assert address is not None
+            fulfillment_instruction = (
+                "Choose Pickup with the earliest available time."
+                if merchant.fulfillment == "pickup"
+                else f"Choose Delivery to: {json.dumps(address_payload)}"
+            )
+            checkout_instruction = f"""
+Open the cart and proceed to checkout as a GUEST; never sign in or create
+an account. {fulfillment_instruction}
+Fill contact details: name {address.recipient_name}, email {address.email},
+phone {address.phone}. If a tip is requested, set it to zero if possible,
+otherwise the minimum. Fill payment with card number
+{payment['CHECKOUT_CARD_NUMBER']}, expiration
+{payment['CHECKOUT_CARD_EXP_MONTH']}/{payment['CHECKOUT_CARD_EXP_YEAR']}, CVV
+{payment['CHECKOUT_CARD_CVV']}, and cardholder name {card_name}.
+
+If the final total exceeds USD {args.max_total:.2f}, return success=false
+and stop. The target state is the final review/payment step with the order
+summary, totals, and the Place Order (or Pay) button visible. ABSOLUTELY DO
+NOT CLICK THAT BUTTON. Call
+capture_checkout_checkpoint(checkpoint="place-order-review",
+visible_part_number="<exact visible item name>", visible_quantity=1,
+visible_total_usd=<final numeric USD total>) before answering.
+""".strip()
         if args.place_order:
             required_checkpoints.add("order-confirmed")
-            answer_instruction = """
+            item_word = "part number" if is_mcmaster else "item name"
+            confirmation_word = (
+                "visible order number"
+                if is_mcmaster
+                else "visible order/confirmation number, or the exact visible "
+                "confirmation heading if no number is shown"
+            )
+            answer_instruction = f"""
 PURCHASE IS EXPLICITLY ENABLED FOR THIS RUN. Only after saving the review
-checkpoint, call authorize_place_order with the exact visible part number,
-package quantity, and final numeric USD total. If authorization fails, stop.
-If it returns AUTHORIZED, click the green PLACE ORDER button exactly once. Wait
-for an explicit successful order confirmation and visible order number. Then
-call capture_checkout_checkpoint(checkpoint="order-confirmed"). Return
-place_order_clicked=true, order_confirmed=true, and the visible order number.
-Never retry or click PLACE ORDER a second time.
+checkpoint, call authorize_place_order with the exact visible {item_word}
+(as visible_part_number), quantity, and final numeric USD total. If
+authorization fails, stop. If it returns AUTHORIZED, click the Place Order
+(or Pay) button exactly once. Wait for an explicit successful order
+confirmation. Then call
+capture_checkout_checkpoint(checkpoint="order-confirmed"). Return
+place_order_clicked=true, order_confirmed=true, and the {confirmation_word}
+as order_number. Never retry or click the button a second time.
 """.strip()
         else:
             answer_instruction = """
-Return success=true only if PLACE ORDER is visible and untouched. Set
-place_order_clicked=false. payment_display may include only brand/last four.
+Return success=true only if the Place Order (or Pay) button is visible and
+untouched. Set place_order_clicked=false. payment_display may include only
+brand/last four.
 """.strip()
     elif do_add:
         checkout_instruction = """
@@ -774,12 +954,41 @@ part_number=null, cart_quantity=0, place_order_visible=false, and
 place_order_clicked=false.
 """.strip()
 
-    workflow_message = f"""
-{proxy_instruction}
-
+    if sms_reader is not None:
+        sms_code_instruction = (
+            "If the site hard-requires a code it sent by SMS, call "
+            "wait_for_sms_2fa_code (the agent owns that phone number). If that "
+            "times out, call wait_for_operator_sms_code as a fallback."
+        )
+    else:
+        sms_code_instruction = (
+            "If the site hard-requires a code it sent by SMS, call "
+            "wait_for_operator_sms_code (a human reads it off the phone; allow "
+            "up to two minutes)."
+        )
+    if is_mcmaster:
+        identity_instruction = f"""
 This is ONE composable cart workflow session. If necessary, log in with email
 {email} and password {password}. Never echo credentials, address, or payment
 data. Use wait_for_email_2fa_code if requested. Confirm the account is David.
+""".strip()
+    else:
+        identity_instruction = f"""
+This is ONE composable cart workflow session on {merchant.display_name}
+({merchant.start_url}). Order as a GUEST; never sign in or create an
+account. Never echo contact, address, or payment data. In the structured
+answer, return authenticated=false and account_indicator="guest".
+
+VERIFICATION CODES: first look for any option to skip verification or
+continue without it. {sms_code_instruction} Only use
+wait_for_email_2fa_code when the site says it emailed a code. If
+verification still fails, stop and report the exact blocker text.
+""".strip()
+
+    workflow_message = f"""
+{proxy_instruction}
+
+{identity_instruction}
 
 INITIAL AUDIT — DO THIS BEFORE ANY OTHER BROWSER ACTION:
 Allow the current page to render, but do not navigate, click, type, clear the
@@ -799,9 +1008,10 @@ CHECKOUT ACTION:
 {answer_instruction}
 
 STRUCTURED ANSWER REQUIREMENTS:
-When the cart contains an item, part_number must be its exact visible McMaster
-part number; use null only for a visibly empty cart. All boolean fields,
-including order_confirmed, must be true or false, never null.
+When the cart contains an item, part_number must be its exact visible
+{"McMaster part number" if is_mcmaster else "item name"}; use null only for a
+visibly empty cart. All boolean fields, including order_confirmed, must be
+true or false, never null.
 """.strip()
     stream_from_index = 0
     if resume_pointer is not None:
@@ -832,6 +1042,8 @@ including order_confirmed, must be true or false, never null.
                 "https://api.ipify.org?format=json"
                 if args.verify_proxy
                 else "https://www.mcmaster.com/Order/"
+                if is_mcmaster
+                else merchant.start_url
             ),
             network={} if args.proxy == "false" else None,
             answer_schema=CartResult,
@@ -847,6 +1059,11 @@ including order_confirmed, must be true or false, never null.
     print(f"Demo session: {demo_session_id}", flush=True)
     print(f"H session: {session.id}", flush=True)
     print(f"H Agent View: {snapshot.agent_view_url}", flush=True)
+    console.key(
+        f"{demo_session_id} · H session {session.id[:8]} started",
+        link_label="watch live agent view",
+        link_target=snapshot.agent_view_url,
+    )
     if args.place_order:
         local_banner(
             "STREAMING COMPOSABLE CART WORKFLOW — PLACE ORDER IS EXPLICITLY ENABLED",
@@ -920,6 +1137,7 @@ including order_confirmed, must be true or false, never null.
     raw_output = result.answer.model_dump(mode="json")
     output = redact_secrets(raw_output)
     assert isinstance(output, dict)
+    output["merchant"] = merchant.nickname
     output["demo_session_id"] = demo_session_id
     output["request_id"] = request_id
     output["h_session_id"] = session.id
@@ -967,8 +1185,13 @@ including order_confirmed, must be true or false, never null.
     )
     run_succeeded = not (
         not result.answer.success
-        or not result.answer.authenticated
-        or "david" not in result.answer.account_indicator.casefold()
+        or (
+            is_mcmaster
+            and (
+                not result.answer.authenticated
+                or "david" not in result.answer.account_indicator.casefold()
+            )
+        )
         or not product_matches
         or result.answer.cart_quantity != (0 if args.reset_only else 1)
         or not purchase_state_valid
@@ -980,6 +1203,17 @@ including order_confirmed, must be true or false, never null.
         outcome=str(result.outcome),
         success=run_succeeded,
     )
+    verdict_parts = []
+    if result.answer.part_number:
+        verdict_parts.append(result.answer.part_number)
+    if result.answer.order_total:
+        verdict_parts.append(f"total {result.answer.order_total}")
+    if result.answer.order_number:
+        verdict_parts.append(f"order {result.answer.order_number}")
+    verdict_detail = " · ".join(verdict_parts) or f"outcome {result.outcome}"
+    console.key(
+        ("✓ SUCCESS · " if run_succeeded else "✗ FAILED · ") + verdict_detail
+    )
     if run_succeeded:
         final_status = str(session.status().status)
         if final_status == "idle":
@@ -988,6 +1222,7 @@ including order_confirmed, must be true or false, never null.
                 LAST_SESSION_PATH,
                 {
                     "h_session_id": session.id,
+                    "merchant": merchant.nickname,
                     "demo_session_id": demo_session_id,
                     "request_number": request_number,
                     "request_id": request_id,
@@ -1027,7 +1262,9 @@ including order_confirmed, must be true or false, never null.
                 LOCAL_FAILURE,
                 component="Error",
             )
+        console.stop()
         raise SystemExit(1)
+    console.stop()
 
 
 if __name__ == "__main__":
