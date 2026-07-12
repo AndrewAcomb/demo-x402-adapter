@@ -151,14 +151,6 @@ export const catalog: Record<string, Product> = {
     fulfillment: 'shipping',
     source_url: "https://www.mcmaster.com/92224A112",
   },
-  'test-item': {
-    id: 'test-item',
-    name: 'Test Item (integration test, no fulfillment)',
-    description:
-      'A ten-cent item for testing the x402 purchase flow end to end. ' +
-      'Fulfillment completes immediately without contacting any merchant.',
-    price_usd: '$0.10',
-  },
 };
 
 export function listProducts() {

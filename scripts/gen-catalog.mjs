@@ -59,15 +59,6 @@ const entries = products
   })
   .join('\n');
 
-// Cheap SKU for integration testing — no real fulfillment behind it.
-const testItem = `  'test-item': {
-    id: 'test-item',
-    name: 'Test Item (integration test, no fulfillment)',
-    description:
-      'A ten-cent item for testing the x402 purchase flow end to end. ' +
-      'Fulfillment completes immediately without contacting any merchant.',
-    price_usd: '$0.10',
-  },`;
 
 const out = `/**
  * Product catalog — GENERATED from the fulfillment-side McMaster catalog.
@@ -103,7 +94,6 @@ export interface Product {
 
 export const catalog: Record<string, Product> = {
 ${entries}
-${testItem}
 };
 
 export function listProducts() {

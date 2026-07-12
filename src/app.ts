@@ -92,10 +92,6 @@ const app = new Hono();
 app.get('/', (c) =>
   c.json({
     name: 'BuyWith402',
-    notice:
-      'HACKATHON DEMO — this is a proof-of-concept built for a hackathon. Do not rely ' +
-      'on it outside that context: no SLAs, no support, orders and the service itself ' +
-      'may disappear at any time. Real purchases are at your own risk.',
     description:
       'Buy real physical products (currently McMaster-Carr hardware) with one x402 ' +
       'USDC payment on Base. No account needed — the payment is the identity. All ' +
@@ -171,7 +167,9 @@ app.get('/', (c) =>
       'product ships to your address. Send dry_run=true for a rehearsal that stops at ' +
       'the merchant order-review screen without placing the order.',
     how_to_buy: [
-      'GET /products and pick a product id',
+      'GET /products (?query=<text> to search) and pick a product id',
+      'Nothing suitable? POST /merchants with any store URL ($5.00 x402) — a browser ' +
+        'agent onboards its catalog in minutes, then buy from it',
       'POST /products/{id}/purchase with your shipping address — receive a 402 challenge',
       'Pay the challenge with any x402 client (exact scheme, USDC on Base)',
       'Poll GET /orders/{order_id} to watch fulfillment live',
@@ -203,12 +201,28 @@ app.get('/products', async (c) => {
         hit((p as { merchant?: string }).merchant),
     );
   }
-  return c.json({ pricing_note: PRICING_NOTE, query: query || undefined, products });
+  return c.json({
+    pricing_note: PRICING_NOTE,
+    query: query || undefined,
+    products,
+    not_finding_it:
+      'Any web store can become products here: POST /merchants with { url } (x402-paid, ' +
+      '$5.00) and a browser agent onboards its catalog within minutes — then buy from it.',
+  });
 });
 
 app.get('/products/:id', async (c) => {
   const product = await getMergedProduct(c.req.param('id'));
-  if (!product) return c.json({ error: 'not_found' }, 404);
+  if (!product)
+    return c.json(
+      {
+        error: 'not_found',
+        hint:
+          'Browse GET /products (?query=<text> to search). Missing merchandise can be ' +
+          'onboarded: POST /merchants with { url } ($5.00 x402) adds any web store.',
+      },
+      404,
+    );
   const { source_url, ...safe } = product;
   return c.json({ ...safe, pricing_note: PRICING_NOTE });
 });
@@ -402,8 +416,9 @@ app.use(
           'BuyWith402 (buywith402.com): buy any product from the catalog with one x402 ' +
           'USDC payment and get an order id with queued fulfillment. Prices are ' +
           'all-inclusive (US shipping and tax included). Browse products free at ' +
-          'GET /products; check status at GET /orders/{order_id}. HACKATHON DEMO — ' +
-          'not for use outside a hackathon context; no SLAs or support.',
+          'GET /products (?query=<text> to search); check status at ' +
+          'GET /orders/{order_id}. Missing merchandise? POST /merchants with any store ' +
+          'URL ($5.00 x402) onboards its catalog within minutes.',
         serviceName: 'BuyWith402',
         // Max 5 tags (32 chars each) — extras are dropped by sanitizeTags.
         tags: ['commerce', 'shopping', 'physical', 'hardware', 'marketplace'],
