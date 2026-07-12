@@ -86,14 +86,16 @@ class MerchantMenu(BaseModel):
             "the typical rate for that locale. 0 only if genuinely untaxed."
         ),
     )
-    estimated_fulfillment_fee_usd: float = Field(
-        default=0.0,
+    estimated_fulfillment_fee_usd: float | None = Field(
+        default=None,
         ge=0,
         le=60,
         description=(
             "Ballpark per-order fulfillment cost in USD from real signals: a "
             "displayed delivery/shipping fee, or the typical fee for this "
-            "platform and order type. 0 for pickup with no visible fee."
+            "platform and order type. 0 for pickup with no visible fee. null "
+            "ONLY if you cannot confirm whether the buyer pays for "
+            "shipping/delivery or picks up."
         ),
     )
     blocker: str | None = None
@@ -181,8 +183,9 @@ from tax amounts visible anywhere in the flow, the merchant's stated
 city/state, or the typical rate for that locale (e.g. San Francisco ~8.6).
 estimated_fulfillment_fee_usd: the per-order delivery/shipping cost, from a
 displayed fee or the typical fee for this platform and order type; use 0
-for pickup with no visible fee. Honest ballparks, never fabricated
-precision — these become price components.
+for pickup with no visible fee, and null ONLY if you cannot confirm
+whether the buyer pays for fulfillment or picks up. Honest ballparks,
+never fabricated precision — these become price components.
 """.strip()
     return f"""
 You are cataloging an online ordering page so software can order from it

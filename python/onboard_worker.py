@@ -46,12 +46,15 @@ MOCK = os.environ.get("ONBOARD_MOCK") == "1"
 POLL_SECONDS = float(os.environ.get("ONBOARD_POLL_SECONDS", "3"))
 WEEK_SECONDS = 60 * 60 * 24 * 7
 
-# x402 charge = item x MARGIN + item x agent-estimated tax rate + the
-# agent-estimated per-order fulfillment fee. The browsing agent ballparks the
-# tax rate and fee from real signals in the flow (onboard_merchant.py), so
-# pickup merchants stop paying phantom shipping. Keep in sync with
-# scripts/gen-catalog.mjs.
-MARGIN = 1.5
+# x402 charge = item + our explicit service fee (10% of the item + $0.25)
+# + item x agent-estimated tax rate + the agent-estimated per-order
+# fulfillment fee. The browsing agent ballparks tax and fee from real signals
+# in the flow (onboard_merchant.py); when it cannot confirm whether the buyer
+# pays shipping/delivery or picks up, we fall back to a conservative $15
+# placeholder rather than $0. Keep in sync with scripts/gen-catalog.mjs.
+SERVICE_FEE_RATE = 0.10
+SERVICE_FEE_FLAT_USD = 0.25
+SHIPPING_FALLBACK_USD = 15.0
 
 
 def redis(command: list[str | int]) -> object:
@@ -96,10 +99,18 @@ def get_job(job_id: str) -> dict[str, str]:
     return {raw[i]: raw[i + 1] for i in range(0, len(raw), 2)}
 
 
+def service_fee(package_price: float) -> Decimal:
+    return (
+        Decimal(str(package_price)) * Decimal(str(SERVICE_FEE_RATE))
+        + Decimal(str(SERVICE_FEE_FLAT_USD))
+    )
+
+
 def x402_price(package_price: float, tax_rate_percent: float, fulfillment_fee_usd: float) -> str:
     price = Decimal(str(package_price))
     charge = (
-        price * Decimal(str(MARGIN))
+        price
+        + service_fee(package_price)
         + price * Decimal(str(tax_rate_percent)) / Decimal("100")
         + Decimal(str(fulfillment_fee_usd))
     )
@@ -162,6 +173,7 @@ def publish_products(
             "description": str(item.get("description") or name),
             "price_usd": x402_price(package_price, tax_rate_percent, fulfillment_fee_usd),
             "merchant_price_usd": merchant_price(package_price),
+            "service_fee_usd": usd(float(service_fee(package_price))),
             "est_tax_usd": usd(package_price * tax_rate_percent / 100),
             "est_fulfillment_fee_usd": usd(fulfillment_fee_usd),
             "fulfillment": fulfillment,
@@ -262,7 +274,13 @@ def handle_real(job_id: str, url: str, nickname: str, max_products: int) -> None
         items,
         fulfillment=str(payload.get("fulfillment") or "shipping"),
         tax_rate_percent=float(payload.get("estimated_tax_rate_percent") or 0.0),
-        fulfillment_fee_usd=float(payload.get("estimated_fulfillment_fee_usd") or 0.0),
+        # None means the agent could not confirm pickup-vs-paid-fulfillment:
+        # fall back to a conservative placeholder, never a free ride.
+        fulfillment_fee_usd=(
+            SHIPPING_FALLBACK_USD
+            if payload.get("estimated_fulfillment_fee_usd") is None
+            else float(payload.get("estimated_fulfillment_fee_usd"))
+        ),
     )
     finish_success(job_id, result.merchant.nickname, result.merchant.display_name, product_ids)
 

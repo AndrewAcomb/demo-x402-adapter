@@ -26,12 +26,14 @@ if (!Array.isArray(products) || products.length === 0) {
   process.exit(1);
 }
 
-// x402 charge = item x MARGIN + item x tax rate + per-order fulfillment fee.
-// For this static McMaster catalog the tax rate and fee are the OBSERVED
-// economics from a real placed order ($5.36 item, $0.46 tax = 8.63%, $13.25
-// standard shipping). Dynamic (onboarded) merchants get these two numbers
-// estimated by the browsing agent instead — see python/onboard_worker.py.
-const MARGIN = 1.5;
+// x402 charge = item + explicit service fee (10% of item + $0.25) + item x
+// tax rate + per-order fulfillment fee. For this static McMaster catalog the
+// tax rate and fee are the OBSERVED economics from a real placed order
+// ($5.36 item, $0.46 tax = 8.63%, $13.25 standard shipping). Dynamic
+// (onboarded) merchants get those two estimated by the browsing agent
+// instead — see python/onboard_worker.py.
+const SERVICE_FEE_RATE = 0.10;
+const SERVICE_FEE_FLAT_USD = 0.25;
 const TAX_RATE_PERCENT = 8.63;
 const FULFILLMENT_FEE_USD = 13.25;
 
@@ -40,13 +42,15 @@ const entries = products
     const name = `${p.description.split(',')[0]} ${p.thread_size} x ${p.length} (pack of ${p.package_quantity})`;
     const description = `${p.description} Package of ${p.package_quantity}. McMaster-Carr part ${p.part_number}.`;
     const tax = p.package_price * (TAX_RATE_PERCENT / 100);
-    const charge = (p.package_price * MARGIN + tax + FULFILLMENT_FEE_USD).toFixed(2);
+    const fee = p.package_price * SERVICE_FEE_RATE + SERVICE_FEE_FLAT_USD;
+    const charge = (p.package_price + fee + tax + FULFILLMENT_FEE_USD).toFixed(2);
     return `  '${p.durable_id}': {
     id: '${p.durable_id}',
     name: ${JSON.stringify(name)},
     description: ${JSON.stringify(description)},
     price_usd: ${JSON.stringify(`$${charge}`)},
     merchant_price_usd: ${JSON.stringify(`$${p.package_price.toFixed(2)}`)},
+    service_fee_usd: ${JSON.stringify(`$${fee.toFixed(2)}`)},
     est_tax_usd: ${JSON.stringify(`$${tax.toFixed(2)}`)},
     est_fulfillment_fee_usd: ${JSON.stringify(`$${FULFILLMENT_FEE_USD.toFixed(2)}`)},
     fulfillment: 'shipping',
@@ -72,8 +76,9 @@ const out = `/**
  *   node scripts/gen-catalog.mjs ${src}
  *
  * Product ids are durable ids shared with the python fulfillment worker.
- * price_usd is the x402 charge (1.5x the real merchant price so payments
- * cover fulfillment); merchant_price_usd is the real McMaster package price.
+ * price_usd is the all-inclusive x402 charge: item + service fee (10% +
+ * $0.25) + estimated tax + fulfillment fee. merchant_price_usd is the real
+ * McMaster package price.
  */
 
 export interface Product {
@@ -84,6 +89,8 @@ export interface Product {
   price_usd: string;
   /** Underlying merchant's real package price (informational). */
   merchant_price_usd?: string;
+  /** Our service fee included in price_usd: 10% of the item + $0.25. */
+  service_fee_usd?: string;
   /** Estimated sales tax included in price_usd (informational). */
   est_tax_usd?: string;
   /** Estimated per-order delivery/shipping cost included in price_usd. */
