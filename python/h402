@@ -22,9 +22,11 @@ RUNTIME_SUBDIRECTORIES = ("catalogs", "sessions", "logs", "private", "legacy")
 
 HELP = """Usage:
   ./h402 doctor [--online]
-  ./h402 merchant onboard <https-url> [--nickname NAME] [--count N] [--max-price P]
+  ./h402 merchant onboard <https-url> [--nickname NAME] [--count N] [--publish]
   ./h402 merchant list
   ./h402 catalog refresh [--merchant NAME]
+  ./h402 catalog publish <validated-catalog.json> [--dry-run|--check]
+  ./h402 catalog generate|check
   ./h402 catalog list [--merchant NAME]
   ./h402 catalog show [--merchant NAME]
   ./h402 cart reset [--merchant NAME]
@@ -41,7 +43,7 @@ Global browser options:
 
 Examples:
   ./h402 merchant onboard 'https://www.toasttab.com/local/order/littlestar...' \\
-      --nickname littlestar
+      --nickname littlestar --publish
   ./h402 cart add -i --merchant littlestar
   ./h402 cart add mcmaster:92224A112
   ./h402 cart reset add -i checkout -i --merchant littlestar
@@ -160,11 +162,16 @@ def parse_workflow(tokens: list[str], merchant_nickname: str) -> None:
         fail("reset followed by checkout would empty the cart; add a product too")
     if "--place-order" in passthrough and recipient is None:
         fail("--place-order requires checkout <address-id|-i>")
-    if product is not None and not any(
-        (RUNTIME / "catalogs").glob(merchant.catalog_glob())
+    published_catalog = (
+        ROOT.parent / "catalog" / "merchant-catalogs" / f"{merchant.nickname}.json"
+    )
+    if (
+        product is not None
+        and not any((RUNTIME / "catalogs").glob(merchant.catalog_glob()))
+        and not published_catalog.is_file()
     ):
         fail(
-            f"no cached catalog for {merchant.nickname}; run "
+            f"no runtime or published catalog for {merchant.nickname}; run "
             f"`./h402 catalog refresh --merchant {merchant.nickname}` first"
         )
 
@@ -345,8 +352,22 @@ def main() -> None:
             if browser_options:
                 fail("browser options do not apply to catalog show")
             catalog_show(merchant_nickname)
+        elif rest[:1] == ["publish"]:
+            if browser_options or merchant_nickname:
+                fail("browser and merchant options do not apply to catalog publish")
+            if len(rest) < 2:
+                fail("catalog publish requires a validated catalog JSON path")
+            run_script("catalog_publisher.py", rest[1:])
+        elif rest == ["generate"]:
+            if browser_options or merchant_nickname:
+                fail("browser and merchant options do not apply to catalog generate")
+            run_script("catalog_publisher.py", [])
+        elif rest == ["check"]:
+            if browser_options or merchant_nickname:
+                fail("browser and merchant options do not apply to catalog check")
+            run_script("catalog_publisher.py", ["--check"])
         else:
-            fail("catalog requires refresh, list, or show")
+            fail("catalog requires refresh, list, show, publish, generate, or check")
     elif command == "profile":
         if browser_options:
             fail("browser options do not apply to profile management")

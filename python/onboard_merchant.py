@@ -4,12 +4,14 @@ build a validated catalog of inexpensive, orderable items."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from threading import Lock
 
@@ -18,8 +20,10 @@ from pydantic import BaseModel, Field, model_validator
 
 from add_cached_to_cart import mint_demo_session, save_image, stamp_provenance
 from h_browser_runtime import HBrowserRuntime
+from catalog_publisher import DEFAULT_SOURCES_DIR, load_catalog, publish_catalogs
 from merchants import (
     Merchant,
+    PricingPolicy,
     get_merchant,
     load_registry,
     nickname_from_url,
@@ -192,12 +196,54 @@ def main() -> None:
     parser.add_argument("--log-file", type=Path, default=RUNTIME / "logs/app.log")
     parser.add_argument("--proxy", choices=("true", "false"), default="true")
     parser.add_argument("--h-environment", "--environment", dest="h_environment")
+    publish_mode = parser.add_mutually_exclusive_group()
+    publish_mode.add_argument(
+        "--publish",
+        action="store_true",
+        help="promote this validated catalog and regenerate src/catalog.ts",
+    )
+    publish_mode.add_argument(
+        "--publish-dry-run",
+        action="store_true",
+        help="preview auto-publishing without modifying canonical sources or TypeScript",
+    )
+    parser.add_argument(
+        "--service-markup-percent",
+        type=Decimal,
+        default=None,
+        help="explicit service markup (default: 15 percent)",
+    )
+    parser.add_argument(
+        "--tax-buffer-percent",
+        type=Decimal,
+        default=None,
+        help="estimated tax buffer (default: 10 percent)",
+    )
+    parser.add_argument(
+        "--shipping-buffer",
+        type=Decimal,
+        default=None,
+        help="shipping reserve in USD (default: 15 shipping, 0 pickup)",
+    )
     args = parser.parse_args()
 
     if not os.environ.get("HAI_API_KEY"):
         parser.error("HAI_API_KEY is not set; let direnv load this project first")
     if not args.full and not 1 <= args.count <= 10:
         parser.error("--count must be between 1 and 10")
+    for label, value in (
+        ("--service-markup-percent", args.service_markup_percent),
+        ("--tax-buffer-percent", args.tax_buffer_percent),
+        ("--shipping-buffer", args.shipping_buffer),
+    ):
+        if value is not None and value < 0:
+            parser.error(f"{label} must not be negative")
+        if value is not None and value != value.quantize(Decimal("0.01")):
+            parser.error(f"{label} must have at most two decimal places")
+    if args.service_markup_percent is not None and args.service_markup_percent > 100:
+        parser.error("--service-markup-percent must not exceed 100")
+    if args.tax_buffer_percent is not None and args.tax_buffer_percent > 50:
+        parser.error("--tax-buffer-percent must not exceed 50")
 
     if args.refresh:
         if not args.nickname:
@@ -404,6 +450,64 @@ def main() -> None:
         raise SystemExit(1)
 
     fulfillment = "pickup" if menu.pickup_available else "shipping"
+    if args.refresh:
+        pricing = merchant.pricing
+        if any(
+            value is not None
+            for value in (
+                args.service_markup_percent,
+                args.tax_buffer_percent,
+                args.shipping_buffer,
+            )
+        ):
+            pricing = PricingPolicy(
+                service_markup_bps=int(
+                    (
+                        args.service_markup_percent
+                        if args.service_markup_percent is not None
+                        else Decimal(pricing.service_markup_bps) / 100
+                    )
+                    * 100
+                ),
+                tax_buffer_bps=int(
+                    (
+                        args.tax_buffer_percent
+                        if args.tax_buffer_percent is not None
+                        else Decimal(pricing.tax_buffer_bps) / 100
+                    )
+                    * 100
+                ),
+                shipping_buffer_usd=(
+                    args.shipping_buffer
+                    if args.shipping_buffer is not None
+                    else pricing.shipping_buffer_usd
+                ),
+                minimum_service_fee_usd=pricing.minimum_service_fee_usd,
+            )
+    else:
+        pricing = PricingPolicy(
+            service_markup_bps=int(
+                (
+                    args.service_markup_percent
+                    if args.service_markup_percent is not None
+                    else Decimal("15")
+                )
+                * 100
+            ),
+            tax_buffer_bps=int(
+                (
+                    args.tax_buffer_percent
+                    if args.tax_buffer_percent is not None
+                    else Decimal("10")
+                )
+                * 100
+            ),
+            shipping_buffer_usd=(
+                args.shipping_buffer
+                if args.shipping_buffer is not None
+                else Decimal("0") if fulfillment == "pickup" else Decimal("15")
+            ),
+        )
     merchant = Merchant(
         nickname=nickname,
         display_name=menu.merchant_display_name,
@@ -413,6 +517,7 @@ def main() -> None:
         requires_login=False,
         catalog_short_name=nickname,
         catalog_mode="full" if args.full else "sample",
+        pricing=pricing,
     )
     save_merchant(merchant)
 
@@ -435,12 +540,29 @@ def main() -> None:
         print("FAILURE: every returned item was zero-priced or duplicate.")
         raise SystemExit(2)
 
+    # Preserve ids from the last published source when the same product appears
+    # in a refreshed H catalog. New collision suffixes derive from identity,
+    # never menu position, so reordering does not churn public ids.
+    prior_ids: dict[tuple[str, str, str], str] = {}
+    canonical_source = DEFAULT_SOURCES_DIR / f"{nickname}.json"
+    if canonical_source.is_file():
+        prior = load_catalog(canonical_source)
+        for prior_product in prior.products:
+            identity = (
+                prior_product.part_number.casefold(),
+                prior_product.options.casefold(),
+                prior_product.url,
+            )
+            prior_ids[identity] = prior_product.durable_id
+
     products = []
     seen_ids: set[str] = set()
     for position, item in enumerate(kept, start=1):
-        durable_id = f"{nickname}:{slugify(item.item_name)}"
+        identity = (item.item_name.casefold(), item.options.casefold(), url)
+        durable_id = prior_ids.get(identity, f"{nickname}:{slugify(item.item_name)}")
         if durable_id in seen_ids:
-            durable_id = f"{durable_id}-{position}"
+            suffix = hashlib.sha256("\0".join(identity).encode()).hexdigest()[:8]
+            durable_id = f"{nickname}:{slugify(item.item_name)[:90]}-{suffix}"
         seen_ids.add(durable_id)
         products.append(
             {
@@ -457,7 +579,15 @@ def main() -> None:
             }
         )
     payload = {
+        "schema_version": 1,
         "merchant": merchant.model_dump(mode="json"),
+        "provenance": {
+            "discovered_by": "H Company computer-use agent",
+            "discovery_mode": "browse-only",
+            "purchase_actions_permitted": False,
+            "source_artifact": f"python/runtime/sessions/{demo_session_id}",
+            "h_session_id": session.id,
+        },
         "pickup_available": menu.pickup_available,
         "delivery_available": menu.delivery_available,
         "products": products,
@@ -473,6 +603,18 @@ def main() -> None:
     print("\nValidated catalog:")
     print(json.dumps(payload, indent=2))
     print(f"\nSaved to {output_path.resolve()}")
+    if args.publish or args.publish_dry_run:
+        changed, _ = publish_catalogs(
+            [output_path],
+            dry_run=args.publish_dry_run,
+        )
+        if args.publish_dry_run:
+            print(
+                "\nPublish dry run complete: "
+                + ("catalog changes are ready" if changed else "catalog is already current")
+            )
+        else:
+            print("\nPublished to the x402 TypeScript catalog.")
     print(
         f"\nMerchant {nickname!r} registered. Next: "
         f"./h402 cart add -i --merchant {nickname}"

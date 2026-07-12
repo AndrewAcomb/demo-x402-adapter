@@ -7,6 +7,9 @@
     "node": "22.x"
   },
   "scripts": {
+    "catalog:generate": "cd python && direnv exec . uv run python catalog_publisher.py",
+    "catalog:check": "cd python && direnv exec . uv run python catalog_publisher.py --check",
+    "test:publisher": "cd python && direnv exec . uv run python -m unittest discover -s tests -v",
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit"

@@ -33,6 +33,38 @@ The `h402` CLI creates all ignored `runtime/` subdirectories automatically and
 anchors them to this Python project, regardless of the caller's current working
 directory.
 
+## Publish a discovered merchant to x402
+
+Append `--publish` to generic merchant onboarding to promote the validated H
+result into the canonical source tree and regenerate `src/catalog.ts` in the
+same command:
+
+```bash
+./h402 merchant onboard 'https://merchant.example/order' \
+  --nickname example --count 5 --publish
+```
+
+Onboarding remains browse-only: H is instructed not to sign in, add to cart,
+begin checkout, or enter personal data. The publisher independently requires
+provenance with `discovery_mode=browse-only` and
+`purchase_actions_permitted=false`. It is a deterministic filesystem build
+step and never launches a browser or purchase workflow.
+
+Use `--publish-dry-run` for the full discovery plus a no-write preview. To
+promote an existing validated run or verify generated-file drift:
+
+```bash
+./h402 catalog publish runtime/catalogs/001-...-example.json --dry-run
+./h402 catalog publish runtime/catalogs/001-...-example.json
+./h402 catalog check
+```
+
+Per-merchant pricing defaults to a 15% service fee (minimum $1), a 10% tax
+buffer, and a $15 shipping buffer for shipped orders ($0 for pickup). Override
+these during onboarding with `--service-markup-percent`,
+`--tax-buffer-percent`, and `--shipping-buffer`. The exact breakdown is stored
+on every published product and the x402 charge is the all-inclusive total.
+
 All H browser calls resolve through `h_browser_runtime.py`. It reads the pinned
 profile UUID from `profile-state.json`, confirms the configured H environment
 still points to that profile, inherits the same custom proxy, and generates the

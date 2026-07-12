@@ -107,10 +107,14 @@ CATALOG_TIMESTAMP = re.compile(r"^\d{3}-(\d{8}T\d{6}Z)-")
 
 
 def newest_catalog(
-    output_dir: Path, pattern: str = "*-mcmaster-screws.json"
+    output_dir: Path,
+    pattern: str = "*-mcmaster-screws.json",
+    fallback: Path | None = None,
 ) -> Path:
     catalogs = sorted(output_dir.glob(pattern))
     if not catalogs:
+        if fallback is not None and fallback.is_file():
+            return fallback
         raise FileNotFoundError(
             f"No cached catalogs matching {pattern!r} found in {output_dir}"
         )
@@ -433,7 +437,14 @@ def main() -> None:
     catalog_path: Path | None = None
     product: dict[str, object] | None = None
     if do_add:
-        catalog_path = newest_catalog(args.catalog_dir, merchant.catalog_glob())
+        catalog_path = newest_catalog(
+            args.catalog_dir,
+            merchant.catalog_glob(),
+            fallback=ROOT.parent
+            / "catalog"
+            / "merchant-catalogs"
+            / f"{merchant.nickname}.json",
+        )
         print(f"\n{describe_catalog(catalog_path)}", flush=True)
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         product = choose_product(

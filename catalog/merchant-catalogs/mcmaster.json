@@ -1,0 +1,160 @@
+{
+  "delivery_available": true,
+  "merchant": {
+    "catalog_mode": "sample",
+    "catalog_short_name": "mcmaster-screws",
+    "display_name": "McMaster-Carr",
+    "fulfillment": "shipping",
+    "kind": "mcmaster",
+    "nickname": "mcmaster",
+    "pricing": {
+      "currency": "USD",
+      "minimum_service_fee_usd": "1.00",
+      "service_markup_bps": 1500,
+      "shipping_buffer_usd": "15.00",
+      "tax_buffer_bps": 1000
+    },
+    "requires_login": true,
+    "start_url": "https://www.mcmaster.com/products/screws/rounded-head-screws-2~/steel-pan-head-phillips-screws~~/"
+  },
+  "pickup_available": false,
+  "products": [
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 2-56 thread, 1/8 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A100",
+      "length": "1/8 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "13.39",
+      "package_quantity": 100,
+      "part_number": "92224A100",
+      "position": 1,
+      "thread_size": "2-56",
+      "url": "https://www.mcmaster.com/92224A100"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 2-56 thread, 3/16 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A101",
+      "length": "3/16 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "11.52",
+      "package_quantity": 100,
+      "part_number": "92224A101",
+      "position": 2,
+      "thread_size": "2-56",
+      "url": "https://www.mcmaster.com/92224A101"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 2-56 thread, 1/4 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A102",
+      "length": "1/4 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "10.12",
+      "package_quantity": 100,
+      "part_number": "92224A102",
+      "position": 3,
+      "thread_size": "2-56",
+      "url": "https://www.mcmaster.com/92224A102"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 2-56 thread, 5/16 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A103",
+      "length": "5/16 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "10.81",
+      "package_quantity": 100,
+      "part_number": "92224A103",
+      "position": 4,
+      "thread_size": "2-56",
+      "url": "https://www.mcmaster.com/92224A103"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 2-56 thread, 3/8 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A104",
+      "length": "3/8 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "8.59",
+      "package_quantity": 50,
+      "part_number": "92224A104",
+      "position": 5,
+      "thread_size": "2-56",
+      "url": "https://www.mcmaster.com/92224A104"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 2-56 thread, 7/16 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A105",
+      "length": "7/16 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "11.12",
+      "package_quantity": 100,
+      "part_number": "92224A105",
+      "position": 6,
+      "thread_size": "2-56",
+      "url": "https://www.mcmaster.com/92224A105"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 2-56 thread, 1/2 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A106",
+      "length": "1/2 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "11.23",
+      "package_quantity": 100,
+      "part_number": "92224A106",
+      "position": 7,
+      "thread_size": "2-56",
+      "url": "https://www.mcmaster.com/92224A106"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 3-48 thread, 3/8 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A109",
+      "length": "3/8 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "13.33",
+      "package_quantity": 100,
+      "part_number": "92224A109",
+      "position": 8,
+      "thread_size": "3-48",
+      "url": "https://www.mcmaster.com/92224A109"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 4-40 thread, 3/16 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A111",
+      "length": "3/16 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "5.49",
+      "package_quantity": 100,
+      "part_number": "92224A111",
+      "position": 9,
+      "thread_size": "4-40",
+      "url": "https://www.mcmaster.com/92224A111"
+    },
+    {
+      "currency": "USD",
+      "description": "Steel Pan Head Phillips Screw, 4-40 thread, 1/4 inch length, Black-Oxide Steel, Fully Threaded",
+      "durable_id": "mcmaster:92224A112",
+      "length": "1/4 inch",
+      "material": "Black-Oxide Steel",
+      "package_price": "5.36",
+      "package_quantity": 100,
+      "part_number": "92224A112",
+      "position": 10,
+      "thread_size": "4-40",
+      "url": "https://www.mcmaster.com/92224A112"
+    }
+  ],
+  "provenance": {
+    "discovered_by": "H Company computer-use agent",
+    "discovery_mode": "browse-only",
+    "purchase_actions_permitted": false,
+    "source_artifact": "python/runtime/catalogs/001-20260711T225139Z-mcmaster-screws.json"
+  },
+  "schema_version": 1
+}

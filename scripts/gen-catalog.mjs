@@ -1,99 +1,25 @@
 #!/usr/bin/env node
 /**
- * Generate src/catalog.ts from a python fulfillment-side catalog JSON
- * (the validated McMaster runs under python/runtime/catalogs/ or python/out/).
+ * Compatibility wrapper for the original generator command.
  *
- * Usage: node scripts/gen-catalog.mjs <path-to-catalog.json>
- *
- * Product ids are the durable ids (e.g. "mcmaster:92224A100") — the shared
- * contract with the fulfillment worker. The x402 charge stays DEMO_PRICE
- * (flat, set in src/app.ts); the underlying merchant price is exposed as
- * merchant_price_usd for transparency.
+ * The canonical implementation is python/catalog_publisher.py. Keeping this
+ * wrapper prevents old demo notes from silently invoking the former
+ * McMaster-only generator and overwriting the multi-merchant contract.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 
-const src = process.argv[2];
-if (!src) {
-  console.error('usage: node scripts/gen-catalog.mjs <catalog.json>');
+const pythonRoot = resolve('python');
+const catalogArgs = process.argv.slice(2).map((arg) => resolve(arg));
+const result = spawnSync(
+  'direnv',
+  ['exec', '.', 'uv', 'run', 'python', 'catalog_publisher.py', ...catalogArgs],
+  { cwd: pythonRoot, stdio: 'inherit' },
+);
+
+if (result.error) {
+  console.error(`catalog publisher failed to start: ${result.error.message}`);
   process.exit(1);
 }
-
-const data = JSON.parse(readFileSync(src, 'utf8'));
-const products = data.products;
-if (!Array.isArray(products) || products.length === 0) {
-  console.error('no products in', src);
-  process.exit(1);
-}
-
-// x402 charge = 1.5x the real merchant item price + a flat shipping/tax
-// buffer, so a settled payment always covers the underlying McMaster cost.
-// Observed real order: $5.36 item + $13.25 standard shipping + $0.46 tax.
-const MARGIN = 1.5;
-const SHIPPING_BUFFER_USD = 15;
-
-const entries = products
-  .map((p) => {
-    const name = `${p.description.split(',')[0]} ${p.thread_size} x ${p.length} (pack of ${p.package_quantity})`;
-    const description = `${p.description} Package of ${p.package_quantity}. McMaster-Carr part ${p.part_number}.`;
-    const charge = (p.package_price * MARGIN + SHIPPING_BUFFER_USD).toFixed(2);
-    return `  '${p.durable_id}': {
-    id: '${p.durable_id}',
-    name: ${JSON.stringify(name)},
-    description: ${JSON.stringify(description)},
-    price_usd: ${JSON.stringify(`$${charge}`)},
-    merchant_price_usd: ${JSON.stringify(`$${p.package_price.toFixed(2)}`)},
-    source_url: ${JSON.stringify(p.url)},
-  },`;
-  })
-  .join('\n');
-
-// Cheap SKU for integration testing — no real fulfillment behind it.
-const testItem = `  'test-item': {
-    id: 'test-item',
-    name: 'Test Item (integration test, no fulfillment)',
-    description:
-      'A ten-cent item for testing the x402 purchase flow end to end. ' +
-      'Fulfillment completes immediately without contacting any merchant.',
-    price_usd: '$0.10',
-  },`;
-
-const out = `/**
- * Product catalog — GENERATED from the fulfillment-side McMaster catalog.
- *
- * Do not edit by hand. Regenerate with:
- *   node scripts/gen-catalog.mjs ${src}
- *
- * Product ids are durable ids shared with the python fulfillment worker.
- * price_usd is the x402 charge (1.5x the real merchant price so payments
- * cover fulfillment); merchant_price_usd is the real McMaster package price.
- */
-
-export interface Product {
-  id: string;
-  name: string;
-  description: string;
-  /** USDC price charged via x402, in dollars. The middleware parses "$0.10" style. */
-  price_usd: string;
-  /** Underlying merchant's real package price (informational). */
-  merchant_price_usd?: string;
-  /** URL of the underlying merchant's product page — the target of computer-use fulfillment. Not exposed publicly. */
-  source_url?: string;
-}
-
-export const catalog: Record<string, Product> = {
-${entries}
-${testItem}
-};
-
-export function listProducts() {
-  return Object.values(catalog).map(({ source_url, ...rest }) => rest);
-}
-
-export function getProduct(id: string): Product | undefined {
-  return catalog[id];
-}
-`;
-
-writeFileSync('src/catalog.ts', out);
-console.log(`wrote src/catalog.ts with ${products.length} products from ${src}`);
+process.exit(result.status ?? 1);

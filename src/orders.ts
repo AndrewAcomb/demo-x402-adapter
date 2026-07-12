@@ -43,6 +43,7 @@ export const FINAL_STATUSES: ReadonlySet<OrderStatus> = new Set(['ready_to_place
 export interface OrderRecord {
   order_id: string;
   product_id: string;
+  merchant?: string;
   quantity: number;
   dry_run: boolean;
   status: OrderStatus;
@@ -79,6 +80,7 @@ export async function createOrder(
     shipping: JSON.stringify(body.shipping),
     email: body.email ?? '',
     source_url: product.source_url ?? '',
+    merchant: product.merchant?.nickname ?? '',
     product_name: product.name,
   };
   const flat = Object.entries(record).flat();
@@ -95,6 +97,7 @@ export async function getOrder(orderId: string): Promise<OrderRecord | undefined
   return {
     order_id: h.order_id,
     product_id: h.product_id,
+    merchant: h.merchant || undefined,
     quantity: Number(h.quantity ?? 1),
     dry_run: h.dry_run !== '0',
     status: (h.status ?? 'queued') as OrderStatus,

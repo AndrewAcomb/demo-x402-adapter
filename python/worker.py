@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Fulfillment worker: bridge paid x402 orders to the McMaster cart flow.
+"""Fulfillment worker: bridge paid x402 orders to the correct merchant cart flow.
 
 Polls the shared Upstash Redis order queue that the TS server (Vercel)
 pushes to on each settled purchase, runs `add_cached_to_cart.py` as a
@@ -150,6 +150,19 @@ def handle_test_item(order_id: str, order: dict[str, str], place_order: bool) ->
     publish(order_id, "worker", f"Test item complete: {final}.")
 
 
+def merchant_for_order(order: dict[str, str]) -> str:
+    """Return the validated routing key carried from the published product."""
+    product_id = order.get("product_id", "")
+    merchant = order.get("merchant") or product_id.partition(":")[0]
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", merchant):
+        raise ValueError(f"order has invalid merchant routing key {merchant!r}")
+    if not product_id.startswith(f"{merchant}:"):
+        raise ValueError(
+            f"product {product_id!r} does not belong to routed merchant {merchant!r}"
+        )
+    return merchant
+
+
 def handle_order(order_id: str) -> None:
     order = get_order(order_id)
     if not order:
@@ -178,6 +191,8 @@ def handle_order(order_id: str) -> None:
         handle_test_item(order_id, order, place_order)
         return
 
+    merchant = merchant_for_order(order)
+
     with tempfile.TemporaryDirectory(prefix=f"order-{order_id[:8]}-") as tmp:
         address_file = write_address_file(order, Path(tmp))
         cmd = [
@@ -191,6 +206,8 @@ def handle_order(order_id: str) -> None:
             str(address_file),
             "--max-total",
             str(MAX_TOTAL),
+            "--merchant",
+            merchant,
         ]
         if place_order:
             cmd.append("--place-order")
