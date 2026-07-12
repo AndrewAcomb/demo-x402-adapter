@@ -136,6 +136,10 @@ def publish_products(
     fulfillment: str = "shipping",
     tax_rate_percent: float = 0.0,
     fulfillment_fee_usd: float = 0.0,
+    tax_estimate_method: str = "unknown",
+    tax_estimate_evidence: str = "No evidence recorded.",
+    fulfillment_fee_method: str = "unknown",
+    fulfillment_fee_evidence: str = "No evidence recorded.",
 ) -> list[str]:
     """Convert validated catalog items to TS-shape products and publish them.
 
@@ -176,6 +180,10 @@ def publish_products(
             "service_fee_usd": usd(float(service_fee(package_price))),
             "est_tax_usd": usd(package_price * tax_rate_percent / 100),
             "est_fulfillment_fee_usd": usd(fulfillment_fee_usd),
+            "tax_estimate_method": tax_estimate_method,
+            "tax_estimate_evidence": tax_estimate_evidence,
+            "fulfillment_fee_method": fulfillment_fee_method,
+            "fulfillment_fee_evidence": fulfillment_fee_evidence,
             "fulfillment": fulfillment,
             "source_url": str(item.get("url") or url),
             "merchant": nickname,
@@ -249,6 +257,10 @@ def handle_mock(job_id: str, url: str, nickname: str, display_name: str) -> None
         fulfillment="pickup",
         tax_rate_percent=8.63,
         fulfillment_fee_usd=0.0,
+        tax_estimate_method="locale_inference",
+        tax_estimate_evidence="Mock merchant location is San Francisco, California.",
+        fulfillment_fee_method="pickup_zero",
+        fulfillment_fee_evidence="Mock catalog is configured for pickup.",
     )
     finish_success(job_id, nickname, display_name, product_ids)
 
@@ -281,6 +293,14 @@ def handle_real(job_id: str, url: str, nickname: str, max_products: int) -> None
             float(payload.get("estimated_fulfillment_fee_usd"))
             if payload.get("estimated_fulfillment_fee_usd") is not None
             else (0.0 if payload.get("fulfillment") == "pickup" else SHIPPING_FALLBACK_USD)
+        ),
+        tax_estimate_method=str(payload.get("tax_estimate_method") or "unknown"),
+        tax_estimate_evidence=str(
+            payload.get("tax_estimate_evidence") or "No evidence recorded."
+        ),
+        fulfillment_fee_method=str(payload.get("fulfillment_fee_method") or "unknown"),
+        fulfillment_fee_evidence=str(
+            payload.get("fulfillment_fee_evidence") or "No evidence recorded."
         ),
     )
     finish_success(job_id, result.merchant.nickname, result.merchant.display_name, product_ids)

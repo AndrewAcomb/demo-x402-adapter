@@ -43,6 +43,7 @@ ONBOARD_CHECKPOINTS = {
     "initial-state": "00-initial-state",
     "menu-items": "01-menu-items",
     "price-verification": "02-price-verification",
+    "economics-evidence": "03-economics-evidence",
 }
 
 
@@ -86,6 +87,17 @@ class MerchantMenu(BaseModel):
             "the typical rate for that locale. 0 only if genuinely untaxed."
         ),
     )
+    tax_estimate_method: str = Field(
+        default="unknown",
+        pattern=r"^(displayed_exact|derived_from_displayed_amount|locale_inference|genuinely_untaxed|unknown)$",
+        description="How estimated_tax_rate_percent was obtained.",
+    )
+    tax_estimate_evidence: str = Field(
+        default="No evidence recorded.",
+        min_length=1,
+        max_length=300,
+        description="Short factual evidence for the tax estimate; not hidden reasoning.",
+    )
     estimated_fulfillment_fee_usd: float | None = Field(
         default=None,
         ge=0,
@@ -98,11 +110,30 @@ class MerchantMenu(BaseModel):
             "shipping/delivery or picks up."
         ),
     )
+    fulfillment_fee_method: str = Field(
+        default="unknown",
+        pattern=r"^(displayed_exact|platform_typical|pickup_zero|unknown)$",
+        description="How estimated_fulfillment_fee_usd was obtained.",
+    )
+    fulfillment_fee_evidence: str = Field(
+        default="No evidence recorded.",
+        min_length=1,
+        max_length=300,
+        description=(
+            "Short factual evidence for the fulfillment-fee estimate; not hidden reasoning."
+        ),
+    )
     blocker: str | None = None
     products: list[MenuItem] = Field(max_length=200)
 
     @model_validator(mode="after")
     def validate_menu(self) -> MerchantMenu:
+        self.tax_estimate_evidence = " ".join(self.tax_estimate_evidence.split())
+        self.fulfillment_fee_evidence = " ".join(
+            self.fulfillment_fee_evidence.split()
+        )
+        if not self.tax_estimate_evidence or not self.fulfillment_fee_evidence:
+            raise ValueError("economics evidence must contain non-whitespace text")
         if not self.ordering_available:
             if self.products:
                 raise ValueError("unorderable results must not contain products")
@@ -187,6 +218,12 @@ pickup is available and no fee is shown, this is 0 — not null. Use null
 ONLY when you cannot confirm whether the buyer pays for fulfillment or
 picks up. Honest ballparks, never fabricated precision — these become
 price components.
+For each number also return its method and a short factual evidence string.
+Use only these tax methods: displayed_exact, derived_from_displayed_amount,
+locale_inference, genuinely_untaxed, unknown. Use only these fulfillment-fee
+methods: displayed_exact, platform_typical, pickup_zero, unknown. Evidence
+must say what page signal or locale/platform fact supports the number; do not
+provide hidden reasoning or unsupported claims.
 """.strip()
     return f"""
 You are cataloging an online ordering page so software can order from it
@@ -206,6 +243,11 @@ SCREENSHOT EVIDENCE while you work:
 - If you had to open an item dialog to verify a hidden price, call
   capture_onboarding_checkpoint(checkpoint="price-verification") once,
   with one representative dialog open, before closing it.
+- If a page signal used for either economics estimate is visible, call
+  capture_onboarding_checkpoint(checkpoint="economics-evidence") once while
+  the strongest such signal is visible. Do not enter a cart or checkout just
+  to obtain this screenshot. For locale/platform inference, a visible merchant
+  location or fulfillment-mode signal is sufficient.
 
 First confirm this page supports placing orders. Record the merchant's
 exact display name as shown on the page. Note whether Pickup and/or
@@ -453,6 +495,20 @@ def run_onboarding(
         )
         raise OnboardError(f"browse run did not succeed (outcome={result.outcome})")
 
+    fulfillment_fee = (
+        "unknown"
+        if menu.estimated_fulfillment_fee_usd is None
+        else f"${menu.estimated_fulfillment_fee_usd:.2f}"
+    )
+    economics_summary = (
+        f"Tax {menu.estimated_tax_rate_percent:g}% "
+        f"({menu.tax_estimate_method}: {menu.tax_estimate_evidence}); "
+        f"fulfillment fee {fulfillment_fee} "
+        f"({menu.fulfillment_fee_method}: {menu.fulfillment_fee_evidence})"
+    )
+    print(f"Economics evidence: {economics_summary}")
+    emit("economics", economics_summary)
+
     fulfillment = "pickup" if menu.pickup_available else "shipping"
     merchant = Merchant(
         nickname=nickname,
@@ -513,7 +569,11 @@ def run_onboarding(
         "delivery_available": menu.delivery_available,
         "fulfillment": fulfillment,
         "estimated_tax_rate_percent": menu.estimated_tax_rate_percent,
+        "tax_estimate_method": menu.tax_estimate_method,
+        "tax_estimate_evidence": menu.tax_estimate_evidence,
         "estimated_fulfillment_fee_usd": menu.estimated_fulfillment_fee_usd,
+        "fulfillment_fee_method": menu.fulfillment_fee_method,
+        "fulfillment_fee_evidence": menu.fulfillment_fee_evidence,
         "products": products,
     }
     output_path = save_catalog(payload, output_dir, merchant.catalog_short_name)
