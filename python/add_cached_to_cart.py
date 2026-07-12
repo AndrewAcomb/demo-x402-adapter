@@ -45,7 +45,10 @@ class CartResult(BaseModel):
     success: bool
     authenticated: bool
     account_indicator: str = Field(min_length=1)
-    part_number: str | None = None
+    part_number: str | None = Field(
+        default=None,
+        description="Exact visible McMaster part number; null only when the cart is empty",
+    )
     cart_quantity: int = Field(ge=0)
     observed_price: str | None = None
     merchandise_total: str | None = None
@@ -59,6 +62,12 @@ class CartResult(BaseModel):
     payment_display: str | None = None
     blocker: str | None = None
     final_url: str = Field(min_length=1)
+
+    @field_validator("order_confirmed", mode="before")
+    @classmethod
+    def normalize_unconfirmed(cls, value: object) -> object:
+        # H sometimes emits JSON null for an explicitly false purchase outcome.
+        return False if value is None else value
 
 
 class ShippingAddress(BaseModel):
@@ -558,6 +567,10 @@ def main() -> None:
             nonlocal purchase_authorized, authorized_part_number, authorized_total
             if purchase_authorized:
                 raise RuntimeError("Place Order was already authorized once")
+            if "place-order-review" not in captured_checkpoints:
+                raise RuntimeError(
+                    "Place Order cannot be authorized before the review checkpoint"
+                )
             normalized_part = visible_part_number.upper()
             if part_number is not None and normalized_part != part_number.upper():
                 raise RuntimeError("Visible part number does not match selected product")
@@ -733,6 +746,11 @@ CHECKOUT ACTION:
 {checkout_instruction}
 
 {answer_instruction}
+
+STRUCTURED ANSWER REQUIREMENTS:
+When the cart contains an item, part_number must be its exact visible McMaster
+part number; use null only for a visibly empty cart. All boolean fields,
+including order_confirmed, must be true or false, never null.
 """.strip()
     stream_from_index = 0
     if resume_pointer is not None:
