@@ -1,5 +1,5 @@
 """Onboard any ordering page as an h402 merchant: browse it with H and
-build a validated catalog of inexpensive, orderable items."""
+build a validated catalog of orderable items."""
 
 from __future__ import annotations
 
@@ -61,6 +61,13 @@ class MenuItem(BaseModel):
         description="Exact displayed price as a plain number, e.g. 0.75"
     )
     currency: str = Field(min_length=3, max_length=3)
+    product_url: str = Field(
+        default="",
+        description=(
+            "Exact direct https product-detail URL observed in the browser; "
+            "empty when no direct URL was verified"
+        ),
+    )
 
     @model_validator(mode="after")
     def normalize(self) -> MenuItem:
@@ -69,6 +76,9 @@ class MenuItem(BaseModel):
         if isinstance(self.package_price, str):
             cleaned = re.sub(r"[^0-9.]", "", self.package_price)
             self.package_price = float(cleaned) if cleaned else 0.0
+        self.product_url = self.product_url.strip()
+        if self.product_url and not re.match(r"^https://", self.product_url):
+            self.product_url = ""
         return self
 
 
@@ -190,22 +200,41 @@ an item requires choices (flavor, size), still include it with options
 left empty — choices are made later at order time. Skip an item only if
 it shows no readable price in the listing. Scroll or switch sections as
 needed until every section has been read once.
+For product_url, record a direct product-detail URL only when it is exposed by
+the listing and you can verify it; otherwise return an empty string.
 """.strip()
     else:
         catalog_task = f"""
-Then build a catalog of {count} inexpensive, currently orderable items,
-each ideally under {max_price:.2f} in the local currency. Do NOT
-exhaustively enumerate the menu: take the first {count} suitable items
-you can verify, ideally all from one or two sections, and stop. Prefer
-simple items that can be added with one click and no required choices:
-sides, sauces, dressings, drinks, desserts, small add-ons. If an item
-requires a selection (size, flavor), either skip it or record the
-cheapest choice in the options field. Every item MUST have a real
-nonzero price you have actually seen displayed. If a price is not shown
-in the menu listing, open that item once to read its true price, then
-close the dialog without adding it. Skip any item whose price you cannot
-verify or that displays as 0.00. Never invent or round names or prices.
-Record the menu section each item appears under.
+Then build a catalog of up to {count} currently orderable items. Prefer
+items under {max_price:.2f} in the local currency, but this is a preference,
+NOT a price ceiling: if you cannot quickly find {count} such items, fill the
+remaining slots with more expensive products whose prices you can verify.
+Never keep scrolling solely to satisfy the preferred price.
+
+Do not exhaustively crawl the store. Start with the current menu or shop page
+and inspect its visible sections. If that does not yield {count} good items,
+you may follow obvious pagination, "next", "view all", menu-category, or
+collection links, inspecting at most 3 additional listing pages. Do not open
+search-engine results, leave the merchant's site, or repeatedly revisit a
+section. Stop as soon as you have {count} verified products. If a reasonable
+scan still yields fewer than {count}, return outcome=success with every valid
+product you did find; a smaller non-empty catalog is acceptable.
+
+Prefer simple items that can be added with one click and no required choices.
+If an item requires a selection (size, flavor), either skip it or record the
+cheapest choice in the options field. Every item MUST have a real nonzero
+price you have actually seen displayed. If a price is not shown in the menu
+listing, open that item once to read its true price, then close the dialog
+without adding it. Skip any item whose price you cannot verify or that
+displays as 0.00. Never invent or round names or prices. Record the menu
+section each item appears under.
+
+For each chosen product, open its product-detail page or dialog once when that
+is possible without adding it to the cart. Record product_url as the exact
+current https URL only if it uniquely identifies that product (Shopify URLs
+commonly contain /products/). Then return to the listing. If opening the item
+does not produce a unique URL, leave product_url empty. Never construct or
+guess a URL from the product name.
 """.strip()
     economics_task = """
 ECONOMICS — ballpark two numbers from real signals only:
@@ -259,7 +288,8 @@ ordering_available=false with the exact blocker text and no products.
 
 For every item return: position (1..N in menu order), exact item name,
 section, short description if shown (else empty), options (or empty),
-package quantity 1, exact price, and the three-letter currency code.
+package quantity 1, exact price, the three-letter currency code, and
+product_url (an exact verified direct URL, or empty).
 """.strip()
 
 
@@ -396,8 +426,8 @@ def run_onboarding(
         answer_schema=MerchantMenu,
         tools=tools,
         messages=onboarding_message(url, count, max_price, full),
-        max_steps=45 if full else 25,
-        max_time_s=540 if full else 300,
+        max_steps=45 if full else 40,
+        max_time_s=540 if full else 420,
     )
     snapshot = session.get()
     record_timing("h-session-created", h_session_id=session.id)
@@ -415,7 +445,7 @@ def run_onboarding(
         with ThreadPoolExecutor(max_workers=1) as executor:
             waiter = executor.submit(
                 session.wait_for_completion,
-                timeout_seconds=570 if full else 330,
+                timeout_seconds=570 if full else 450,
                 tools=tools,
             )
             for event in session.stream():
@@ -560,7 +590,7 @@ def run_onboarding(
                 "package_quantity": item.package_quantity,
                 "package_price": float(item.package_price),
                 "currency": item.currency,
-                "url": url,
+                "url": item.product_url or url,
             }
         )
     payload = {

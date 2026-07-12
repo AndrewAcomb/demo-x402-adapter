@@ -199,7 +199,7 @@ The interactive flow asks for the product first and then a recipient from the
 address book. The selected name/address is used for both delivery and billing;
 the card always comes from `.env`. Copy `addresses.example.json` to
 `runtime/private/addresses.json`, edit its recipient list, and use `--max-total` to set
-the fail-closed order ceiling (default: `$50.00` including shipping and tax).
+the fail-closed order ceiling (default: `$100.00` including shipping and tax).
 
 Each new H session lineage atomically mints the next demo session ID (`S001`
 through `S999`) and stores its artifacts in a matching directory. The agent

@@ -362,7 +362,7 @@ def main() -> None:
         default="mcmaster",
         help="Registered merchant nickname (default: mcmaster)",
     )
-    parser.add_argument("--max-total", type=float, default=50.0)
+    parser.add_argument("--max-total", type=float, default=100.0)
     parser.add_argument(
         "--place-order",
         action="store_true",
