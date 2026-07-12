@@ -274,12 +274,13 @@ def handle_real(job_id: str, url: str, nickname: str, max_products: int) -> None
         items,
         fulfillment=str(payload.get("fulfillment") or "shipping"),
         tax_rate_percent=float(payload.get("estimated_tax_rate_percent") or 0.0),
-        # None means the agent could not confirm pickup-vs-paid-fulfillment:
-        # fall back to a conservative placeholder, never a free ride.
+        # None means the agent could not confirm the fee. If it DID confirm
+        # pickup, no fee is coherent (picking up is free); only an
+        # unconfirmed/shipping mode gets the conservative $15 placeholder.
         fulfillment_fee_usd=(
-            SHIPPING_FALLBACK_USD
-            if payload.get("estimated_fulfillment_fee_usd") is None
-            else float(payload.get("estimated_fulfillment_fee_usd"))
+            float(payload.get("estimated_fulfillment_fee_usd"))
+            if payload.get("estimated_fulfillment_fee_usd") is not None
+            else (0.0 if payload.get("fulfillment") == "pickup" else SHIPPING_FALLBACK_USD)
         ),
     )
     finish_success(job_id, result.merchant.nickname, result.merchant.display_name, product_ids)

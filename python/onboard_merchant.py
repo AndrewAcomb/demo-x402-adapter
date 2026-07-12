@@ -182,10 +182,11 @@ estimated_tax_rate_percent: the sales-tax rate this merchant will charge,
 from tax amounts visible anywhere in the flow, the merchant's stated
 city/state, or the typical rate for that locale (e.g. San Francisco ~8.6).
 estimated_fulfillment_fee_usd: the per-order delivery/shipping cost, from a
-displayed fee or the typical fee for this platform and order type; use 0
-for pickup with no visible fee, and null ONLY if you cannot confirm
-whether the buyer pays for fulfillment or picks up. Honest ballparks,
-never fabricated precision — these become price components.
+displayed fee or the typical fee for this platform and order type. If
+pickup is available and no fee is shown, this is 0 — not null. Use null
+ONLY when you cannot confirm whether the buyer pays for fulfillment or
+picks up. Honest ballparks, never fabricated precision — these become
+price components.
 """.strip()
     return f"""
 You are cataloging an online ordering page so software can order from it
