@@ -156,6 +156,9 @@ app.get('/', (c) =>
           '/orders/{order_id}: pass ?since=<next_since>, keep polling while final=false.',
       },
     ],
+    pricing:
+      'Prices are all-inclusive and itemized per product: merchant item price + our ' +
+      'service fee (10% + $0.25, service_fee_usd) + estimated tax + fulfillment cost.',
     dry_run:
       'Purchases are REAL by default: fulfillment places the merchant order and the ' +
       'product ships to your address. Send dry_run=true for a rehearsal that stops at ' +
@@ -174,7 +177,11 @@ app.get('/health', (c) =>
 );
 
 const PRICING_NOTE =
-  'All prices are all-inclusive: US shipping and tax are included. The price shown is the full x402 charge.';
+  'All prices are all-inclusive: the merchant item price, our service fee (10% of ' +
+  'the item + $0.25, shown as service_fee_usd), estimated tax, and the item’s ' +
+  'fulfillment cost (shipping or delivery; zero for pickup). The price shown is ' +
+  'the full x402 charge. Each item’s fulfillment field says how it reaches you — ' +
+  'fixed per item, not selectable at purchase.';
 
 app.get('/products', async (c) =>
   c.json({ pricing_note: PRICING_NOTE, products: await listMergedProducts() }),

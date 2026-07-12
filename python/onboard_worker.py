@@ -46,10 +46,15 @@ MOCK = os.environ.get("ONBOARD_MOCK") == "1"
 POLL_SECONDS = float(os.environ.get("ONBOARD_POLL_SECONDS", "3"))
 WEEK_SECONDS = 60 * 60 * 24 * 7
 
-# x402 charge = merchant package price x MARGIN + flat shipping/tax buffer.
-# Keep in sync with scripts/gen-catalog.mjs.
-MARGIN = 1.5
-SHIPPING_BUFFER_USD = 15.0
+# x402 charge = item + our explicit service fee (10% of the item + $0.25)
+# + item x agent-estimated tax rate + the agent-estimated per-order
+# fulfillment fee. The browsing agent ballparks tax and fee from real signals
+# in the flow (onboard_merchant.py); when it cannot confirm whether the buyer
+# pays shipping/delivery or picks up, we fall back to a conservative $15
+# placeholder rather than $0. Keep in sync with scripts/gen-catalog.mjs.
+SERVICE_FEE_RATE = 0.10
+SERVICE_FEE_FLAT_USD = 0.25
+SHIPPING_FALLBACK_USD = 15.0
 
 
 def redis(command: list[str | int]) -> object:
@@ -94,10 +99,27 @@ def get_job(job_id: str) -> dict[str, str]:
     return {raw[i]: raw[i + 1] for i in range(0, len(raw), 2)}
 
 
-def x402_price(package_price: float) -> str:
-    charge = Decimal(str(package_price)) * Decimal(str(MARGIN)) + Decimal(str(SHIPPING_BUFFER_USD))
+def service_fee(package_price: float) -> Decimal:
+    return (
+        Decimal(str(package_price)) * Decimal(str(SERVICE_FEE_RATE))
+        + Decimal(str(SERVICE_FEE_FLAT_USD))
+    )
+
+
+def x402_price(package_price: float, tax_rate_percent: float, fulfillment_fee_usd: float) -> str:
+    price = Decimal(str(package_price))
+    charge = (
+        price
+        + service_fee(package_price)
+        + price * Decimal(str(tax_rate_percent)) / Decimal("100")
+        + Decimal(str(fulfillment_fee_usd))
+    )
     # Half-up to two decimals, matching scripts/gen-catalog.mjs (JS toFixed).
     return f"${charge.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}"
+
+
+def usd(amount: float) -> str:
+    return f"${Decimal(str(amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}"
 
 
 def merchant_price(package_price: float) -> str:
@@ -110,6 +132,10 @@ def publish_products(
     display_name: str,
     url: str,
     items: list[dict],
+    *,
+    fulfillment: str = "shipping",
+    tax_rate_percent: float = 0.0,
+    fulfillment_fee_usd: float = 0.0,
 ) -> list[str]:
     """Convert validated catalog items to TS-shape products and publish them.
 
@@ -121,6 +147,19 @@ def publish_products(
     onboarding both end up here, so the TS side sees identical data.
     """
     now = datetime.now(UTC).isoformat(timespec="seconds")
+
+    # Re-onboarding replaces the merchant's catalog: the browse may select a
+    # different item set each run, so remove any previously published ids
+    # that are not in the new set — otherwise stale products (old pricing,
+    # old fields) linger in the merged catalog forever.
+    previous_ids: list[str] = []
+    try:
+        raw_summary = redis(["HGET", "merchants:index", nickname])
+        if raw_summary:
+            previous_ids = list(json.loads(str(raw_summary)).get("product_ids") or [])
+    except Exception:  # noqa: BLE001 — a broken summary must not block publishing
+        previous_ids = []
+
     product_ids: list[str] = []
     for item in items:
         name = str(item["part_number"])
@@ -132,14 +171,22 @@ def publish_products(
             "id": str(item["durable_id"]),
             "name": name,
             "description": str(item.get("description") or name),
-            "price_usd": x402_price(package_price),
+            "price_usd": x402_price(package_price, tax_rate_percent, fulfillment_fee_usd),
             "merchant_price_usd": merchant_price(package_price),
+            "service_fee_usd": usd(float(service_fee(package_price))),
+            "est_tax_usd": usd(package_price * tax_rate_percent / 100),
+            "est_fulfillment_fee_usd": usd(fulfillment_fee_usd),
+            "fulfillment": fulfillment,
             "source_url": str(item.get("url") or url),
             "merchant": nickname,
             "onboarded_at": now,
         }
         redis(["HSET", "catalog:dynamic", product["id"], json.dumps(product)])
         product_ids.append(product["id"])
+    stale = [pid for pid in previous_ids if pid not in product_ids]
+    if stale:
+        redis(["HDEL", "catalog:dynamic", *stale])
+        publish(job_id, "catalog", f"Removed {len(stale)} stale product(s) from the previous onboarding")
     summary = {
         "display_name": display_name,
         "url": url,
@@ -193,7 +240,16 @@ def handle_mock(job_id: str, url: str, nickname: str, display_name: str) -> None
         time.sleep(1)
     items = mock_items(nickname, url)
     publish(job_id, "catalog", f"Validated catalog built ({len(items)} products)")
-    product_ids = publish_products(job_id, nickname, display_name, url, items)
+    product_ids = publish_products(
+        job_id,
+        nickname,
+        display_name,
+        url,
+        items,
+        fulfillment="pickup",
+        tax_rate_percent=8.63,
+        fulfillment_fee_usd=0.0,
+    )
     finish_success(job_id, nickname, display_name, product_ids)
 
 
@@ -209,12 +265,22 @@ def handle_real(job_id: str, url: str, nickname: str, max_products: int) -> None
         on_event=lambda stage, message: publish(job_id, stage, message),
     )
     items = list(result.payload["products"])
+    payload = result.payload
     product_ids = publish_products(
         job_id,
         result.merchant.nickname,
         result.merchant.display_name,
         url,
         items,
+        fulfillment=str(payload.get("fulfillment") or "shipping"),
+        tax_rate_percent=float(payload.get("estimated_tax_rate_percent") or 0.0),
+        # None means the agent could not confirm pickup-vs-paid-fulfillment:
+        # fall back to a conservative placeholder, never a free ride.
+        fulfillment_fee_usd=(
+            SHIPPING_FALLBACK_USD
+            if payload.get("estimated_fulfillment_fee_usd") is None
+            else float(payload.get("estimated_fulfillment_fee_usd"))
+        ),
     )
     finish_success(job_id, result.merchant.nickname, result.merchant.display_name, product_ids)
 
