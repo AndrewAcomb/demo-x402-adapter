@@ -156,12 +156,13 @@ export class Session {
       this.say(`Got it. Looking for ${intent.query}, shipping to the ${intent.recipient}.`);
 
       // 2. Discover the merchant on the x402 Bazaar.
-      this.send({ type: 'stage', name: 'discovery', detail: this.cfg.facilitatorUrl });
-      const disc = await discoverMerchant(this.cfg);
+      this.send({ type: 'stage', name: 'discovery', detail: this.cfg.bazaarUrl });
+      const disc = await discoverMerchant(this.cfg, intent.query);
       this.send({ type: 'thought', text: `Bazaar: ${disc.note}` });
       if (disc.found) {
         this.say(
-          `I found ${disc.serviceName ?? 'BuyWith402'} on the x402 Bazaar. It sells real hardware for USDC.`,
+          `I searched the x402 Bazaar and found ${disc.serviceName ?? 'BuyWith402'}` +
+            `${disc.rank ? `, ranked number ${disc.rank}` : ''}. It sells real hardware for USDC.`,
         );
       } else {
         this.say('Bazaar lookup came up empty, so I am going straight to the merchant I know.');
@@ -234,7 +235,8 @@ export class Session {
     const { product, quantity, shipping, dryRun } = this.pendingPurchase;
     this.state = 'working';
     try {
-      this.send({ type: 'stage', name: 'paying', detail: `x402 exact / USDC on ${this.cfg.network}` });
+      // The 402 challenge itself declares the network; don't guess it here.
+      this.send({ type: 'stage', name: 'paying', detail: 'x402 exact scheme / USDC' });
       this.say(
         this.rig.mode === 'real'
           ? 'Paying now: one signed USDC transfer over the x402 protocol.'

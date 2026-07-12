@@ -1,9 +1,14 @@
 /**
  * x402 Bazaar discovery — the "the agent FOUND the merchant" stage moment.
  *
- * Best-effort: queries the facilitator's discovery list for an HTTP resource
- * on the merchant's host. Any failure (offline, facilitator without a bazaar,
- * merchant not yet indexed) degrades gracefully to the configured URL.
+ * Verified live (2026-07-12): the x402.org facilitator has no discovery
+ * endpoint (404), but Coinbase CDP's public Bazaar lists ~25k resources and
+ * its natural-language search ranks BuyWith402 first for shopping-flavored
+ * queries like "buy physical hardware with USDC: ...". So we search the CDP
+ * Bazaar with the buyer's own words and verify the hit by host.
+ *
+ * Best-effort: any failure (offline, facilitator without a bazaar, merchant
+ * not indexed) degrades gracefully to the configured MERCHANT_URL.
  */
 
 import { HTTPFacilitatorClient } from '@x402/core/http';
@@ -16,51 +21,69 @@ export interface DiscoveryResult {
   /** Resource URL as listed on the Bazaar, when found. */
   resource?: string;
   serviceName?: string;
-  /** How many resources the Bazaar listed in total (for narration). */
-  totalListed?: number;
+  /** 1-based rank in the search results, for narration. */
+  rank?: number;
+  query?: string;
   note: string;
 }
 
-export async function discoverMerchant(cfg: Config): Promise<DiscoveryResult> {
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
+export async function discoverMerchant(cfg: Config, intentQuery?: string): Promise<DiscoveryResult> {
   if (cfg.mockMerchant) {
     return {
       found: true,
       resource: `${cfg.merchantUrl}/products/{id}/purchase`,
       serviceName: 'BuyWith402 (mock)',
-      totalListed: 1,
+      rank: 1,
+      query: intentQuery,
       note: 'mock merchant — Bazaar lookup simulated',
     };
   }
 
-  const merchantHost = new URL(cfg.merchantUrl).host;
+  const merchantHost = new URL(cfg.merchantUrl).host.replace(/^www\./, '');
+  const queries = [
+    ...(intentQuery ? [`buy physical hardware with USDC: ${intentQuery}`] : []),
+    'physical products shopping hardware commerce',
+  ];
+
   try {
-    const client = withBazaar(new HTTPFacilitatorClient({ url: cfg.facilitatorUrl }));
-    const listing = await Promise.race([
-      client.extensions.bazaar.listResources({ type: 'http', limit: 200 }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('bazaar lookup timed out')), 8000),
-      ),
-    ]);
-    const hit = listing.items.find((item) => {
-      try {
-        return new URL(item.resource).host === merchantHost;
-      } catch {
-        return false;
+    const client = withBazaar(new HTTPFacilitatorClient({ url: cfg.bazaarUrl }));
+    for (const query of queries) {
+      const result = await withTimeout(
+        client.extensions.bazaar.search({ query, limit: 10 }),
+        8000,
+        'bazaar search',
+      );
+      const idx = result.resources.findIndex((item) => {
+        try {
+          return new URL(item.resource).host.replace(/^www\./, '') === merchantHost;
+        } catch {
+          return false;
+        }
+      });
+      if (idx >= 0) {
+        const hit = result.resources[idx];
+        return {
+          found: true,
+          resource: hit.resource,
+          serviceName: hit.serviceName,
+          rank: idx + 1,
+          query,
+          note: `ranked #${idx + 1} on the x402 Bazaar for "${query}"`,
+        };
       }
-    });
-    if (hit) {
-      return {
-        found: true,
-        resource: hit.resource,
-        serviceName: hit.serviceName,
-        totalListed: listing.pagination?.total ?? listing.items.length,
-        note: `found on the x402 Bazaar via ${cfg.facilitatorUrl}`,
-      };
     }
     return {
       found: false,
-      totalListed: listing.pagination?.total ?? listing.items.length,
-      note: `merchant not in the Bazaar listing yet — using configured URL ${cfg.merchantUrl}`,
+      note: `merchant not in Bazaar search results — using configured URL ${cfg.merchantUrl}`,
     };
   } catch (e) {
     const msg = logError('[bazaar] discovery failed:', e);

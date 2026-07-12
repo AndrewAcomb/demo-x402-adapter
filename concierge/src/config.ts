@@ -44,6 +44,8 @@ export interface Config {
   buyerPrivateKey?: `0x${string}`;
   network: string;
   facilitatorUrl: string;
+  /** Bazaar discovery endpoint (CDP's public one actually has the listing). */
+  bazaarUrl: string;
   /** true (default): send dry_run=true to the merchant — rehearsal only. */
   demoDryRun: boolean;
   allowRealPurchase: boolean;
@@ -87,7 +89,9 @@ export function loadConfig(): Config {
     port,
     merchantUrl: mockMerchant
       ? `http://localhost:${port}/mock-merchant`
-      : (merchantUrlEnv ?? 'https://buywith402.com').replace(/\/$/, ''),
+      : // NB: www — the apex 308-redirects, and we don't want the payment
+        // retry bouncing through a redirect.
+        (merchantUrlEnv ?? 'https://www.buywith402.com').replace(/\/$/, ''),
     mockVoice,
     mockLlm,
     mockMerchant,
@@ -99,6 +103,8 @@ export function loadConfig(): Config {
     buyerPrivateKey,
     network: process.env.X402_NETWORK || 'eip155:84532', // Base Sepolia
     facilitatorUrl: process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator',
+    bazaarUrl:
+      process.env.X402_BAZAAR_URL || 'https://api.cdp.coinbase.com/platform/v2/x402',
     demoDryRun: boolEnv('DEMO_DRY_RUN') ?? true,
     allowRealPurchase: boolEnv('ALLOW_REAL_PURCHASE') ?? false,
     maxSpendUsd: Number(process.env.MAX_SPEND_USD ?? 50),

@@ -42,8 +42,9 @@ npm run typecheck
 | `HAI_MODEL` | `holo3-1-35b-a3b` | H model name. |
 | `X402_BUYER_PRIVATE_KEY` | — | EVM key holding testnet USDC. Absent → payment simulated. |
 | `X402_NETWORK` | `eip155:84532` | Base Sepolia by default. |
-| `X402_FACILITATOR_URL` | `https://x402.org/facilitator` | Also used for Bazaar discovery. |
-| `MERCHANT_URL` | `https://buywith402.com` | Real merchant. Setting it flips the merchant live. |
+| `X402_FACILITATOR_URL` | `https://x402.org/facilitator` | Buyer-side facilitator reference (informational). |
+| `X402_BAZAAR_URL` | `https://api.cdp.coinbase.com/platform/v2/x402` | Bazaar discovery endpoint. CDP's is public and actually lists BuyWith402; x402.org has no discovery API (verified — 404). |
+| `MERCHANT_URL` | `https://www.buywith402.com` | Real merchant (keep the `www` — the apex 308-redirects). Setting it flips the merchant live. |
 | `MOCK_VOICE` / `MOCK_LLM` / `MOCK_MERCHANT` / `MOCK_PAY` | auto | `1`/`0` to force; default is auto-detect from the keys above. |
 | `DEMO_DRY_RUN` | `1` | Send `dry_run=true` to the merchant (fulfillment stops at order review). |
 | `ALLOW_REAL_PURCHASE` | `0` | Must be `1` for any non-dry-run order. |
@@ -70,14 +71,17 @@ Order matters — each step is independently reversible:
 
 1. **Brain live:** set `HAI_API_KEY`. Re-run `npm run smoke` style order
    via the UI; check the choice justification reads well.
-2. **Merchant live:** set `MERCHANT_URL=https://buywith402.com`
+2. **Merchant live:** set `MERCHANT_URL=https://www.buywith402.com`
    (keep `MOCK_PAY=1` for now — the purchase will fail at the real 402,
-   which proves the challenge; or skip straight to step 3).
-3. **Payment live:** set `X402_BUYER_PRIVATE_KEY` (wallet funded with
-   USDC on Base Sepolia — or Base mainnet with `X402_NETWORK=eip155:8453`
-   if the merchant is on mainnet; check `GET https://buywith402.com/health`
-   for its network). Keep `DEMO_DRY_RUN=1`: money moves, but fulfillment
-   stops at the merchant's order-review screen.
+   which proves the challenge; or skip straight to step 3). Bazaar
+   discovery goes live with it: the concierge searches CDP's public
+   Bazaar with the buyer's own words and BuyWith402 ranks #1 (verified).
+3. **Payment live:** set `X402_BUYER_PRIVATE_KEY`. The deployed
+   merchant is on Base **mainnet** (`eip155:8453`, verified via
+   `GET /health`), so the wallet needs real USDC on Base; the x402
+   client registers a wildcard EVM scheme, so no network env change is
+   needed. Keep `DEMO_DRY_RUN=1`: money moves, but fulfillment stops at
+   the merchant's order-review screen.
 4. **Voice live:** set `GRADIUM_API_KEY`. Chrome, localhost (secure
    context) — click the mic, speak, watch the live transcript.
 5. **Stage settings:** raise `MOCK_EVENT_MS` irrelevant now; real events
