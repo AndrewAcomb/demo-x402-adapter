@@ -121,9 +121,9 @@ app.get('/', (c) =>
       },
     ],
     dry_run:
-      'Purchases default to dry_run=true: fulfillment stops at the merchant order-review ' +
-      'screen (no real merchant order is placed). Send dry_run=false to request real ' +
-      'placement.',
+      'Purchases are REAL by default: fulfillment places the merchant order and the ' +
+      'product ships to your address. Send dry_run=true for a rehearsal that stops at ' +
+      'the merchant order-review screen without placing the order.',
     how_to_buy: [
       'GET /products and pick a product id',
       'POST /products/{id}/purchase with your shipping address — receive a 402 challenge',

@@ -22,12 +22,12 @@ export const PurchaseBody = z.object({
   shipping: Shipping,
   gift_note: z.string().max(300).optional(),
   /**
-   * When true (the default), fulfillment stops at the merchant's order-review
-   * screen without placing the order — safe to demo repeatedly. Set false to
-   * request real placement; the worker only honors it when its own
-   * ALLOW_REAL_ORDERS env flag is also set (two-key safety).
+   * Real orders by default. Set true for a rehearsal: fulfillment stops at
+   * the merchant's order-review screen without placing the order. Real
+   * placement additionally requires the worker's ALLOW_REAL_ORDERS env flag
+   * (two-key safety).
    */
-  dry_run: z.boolean().default(true),
+  dry_run: z.boolean().default(false),
 });
 export type PurchaseBody = z.infer<typeof PurchaseBody>;
 
