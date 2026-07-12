@@ -19,6 +19,8 @@ import { getProduct, listProducts } from './catalog.js';
 import { PurchaseBody, type OrderResponse } from './schemas.js';
 import { enqueueFulfillment, getFulfillment } from './fulfillment.js';
 import { FINAL_STATUSES, createOrder, getOrder, getOrderEvents, ordersConfigured } from './orders.js';
+import { VoiceMatchRequest, matchCatalog, transcribeWithGradium } from './voice.js';
+import { workshopHtml } from './workshop.js';
 
 const NETWORK = (process.env.X402_NETWORK ?? 'eip155:84532') as Network;
 const PAY_TO = process.env.X402_PAY_TO as `0x${string}` | undefined;
@@ -100,6 +102,11 @@ app.get('/', (c) =>
       { method: 'GET', path: '/products', description: 'List all products (free).' },
       { method: 'GET', path: '/products/{id}', description: 'One product (free).' },
       {
+        method: 'GET',
+        path: '/workshop',
+        description: 'Voice procurement demo UI (free; Gradium STT when configured).',
+      },
+      {
         method: 'POST',
         path: '/products/{id}/purchase',
         description:
@@ -149,6 +156,66 @@ app.get('/products/:id', (c) => {
   if (!product) return c.json({ error: 'not_found' }, 404);
   const { source_url, ...safe } = product;
   return c.json({ ...safe, pricing_note: PRICING_NOTE });
+});
+
+// Human-facing voice entry point. These endpoints are deliberately registered
+// before the x402 purchase middleware and are always free.
+app.get('/workshop', (c) => c.html(workshopHtml));
+
+app.post('/voice/match', async (c) => {
+  const raw = await c.req.json().catch(() => ({}));
+  const parsed = VoiceMatchRequest.safeParse(raw);
+  if (!parsed.success) return c.json({ error: 'invalid_transcript' }, 400);
+  return c.json(matchCatalog(parsed.data.transcript));
+});
+
+const GRADIUM_CONTENT_TYPES = new Set(['audio/wav', 'audio/pcm', 'audio/ogg', 'audio/opus']);
+const MAX_VOICE_BYTES = 10 * 1024 * 1024;
+
+app.post('/voice/transcribe', async (c) => {
+  const apiKey = process.env.GRADIUM_API_KEY;
+  if (!apiKey) {
+    return c.json(
+      {
+        error: 'gradium_not_configured',
+        message: 'Voice transcription is not configured. Use the clearly labeled typed fallback.',
+      },
+      503,
+    );
+  }
+  const contentType = c.req.header('content-type')?.split(';')[0].trim().toLowerCase() ?? '';
+  if (!GRADIUM_CONTENT_TYPES.has(contentType)) {
+    return c.json(
+      { error: 'unsupported_audio', message: 'Send WAV, PCM, Ogg, or Opus audio.' },
+      415,
+    );
+  }
+  const declaredBytes = Number(c.req.header('content-length') ?? 0);
+  if (declaredBytes > MAX_VOICE_BYTES) {
+    return c.json({ error: 'audio_too_large', message: 'Audio must be 10 MB or smaller.' }, 413);
+  }
+  const audio = await c.req.arrayBuffer();
+  if (audio.byteLength === 0 || audio.byteLength > MAX_VOICE_BYTES) {
+    return c.json(
+      {
+        error: audio.byteLength === 0 ? 'empty_audio' : 'audio_too_large',
+        message: audio.byteLength === 0 ? 'Record some audio first.' : 'Audio must be 10 MB or smaller.',
+      },
+      audio.byteLength === 0 ? 400 : 413,
+    );
+  }
+  try {
+    return c.json(await transcribeWithGradium(audio, contentType, { apiKey }));
+  } catch (error) {
+    console.error('[voice] Gradium transcription failed:', (error as Error).message);
+    return c.json(
+      {
+        error: 'transcription_failed',
+        message: 'Gradium could not transcribe this recording. Retry or use typed fallback.',
+      },
+      502,
+    );
+  }
 });
 
 /**
