@@ -1,0 +1,19 @@
+{
+  "office": {
+    "name": "Farsight Labs — Office",
+    "address_1": "548 Market St",
+    "address_2": "Suite 26404",
+    "city": "San Francisco",
+    "state": "CA",
+    "zip": "94104",
+    "country": "US"
+  },
+  "home": {
+    "name": "Jane Doe",
+    "address_1": "123 Main St",
+    "city": "San Francisco",
+    "state": "CA",
+    "zip": "94114",
+    "country": "US"
+  }
+}

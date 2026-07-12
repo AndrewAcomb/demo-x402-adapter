@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Concierge</title>
+<style>
+  :root {
+    --bg: #0b0e13;
+    --panel: #131822;
+    --panel-2: #1a2230;
+    --line: #263042;
+    --text: #e8edf5;
+    --dim: #8b97a8;
+    --accent: #4da3ff;
+    --gold: #e3b341;
+    --green: #3fcf8e;
+    --red: #ff6b6b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 22px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 20px; font-weight: 700; letter-spacing: .3px; }
+  header h1 span { color: var(--accent); }
+  .badges { display: flex; gap: 8px; margin-left: auto; }
+  .badge {
+    font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+    padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim);
+  }
+  .badge.live { color: var(--green); border-color: var(--green); }
+  .badge.mock { color: var(--gold); border-color: var(--gold); }
+
+  main { flex: 1; display: grid; grid-template-columns: 460px 1fr; min-height: 0; }
+
+  /* ----- left: conversation ----- */
+  #feed {
+    overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px;
+    border-right: 1px solid var(--line);
+  }
+  .item { max-width: 95%; border-radius: 12px; padding: 10px 14px; animation: pop .18s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+  .item.user {
+    align-self: flex-end; background: #1d3a5f; border: 1px solid #2c5688;
+    font-size: 18px; font-weight: 600;
+  }
+  .item.user.partial { opacity: .55; font-style: italic; }
+  .item.say { background: var(--panel-2); border: 1px solid var(--line); font-size: 18px; }
+  .item.say::before { content: "🗣 "; }
+  .item.thought { background: transparent; border: 1px dashed var(--line); color: var(--dim); font-size: 13.5px; }
+  .item.stage { align-self: center; color: var(--accent); font-size: 12px; letter-spacing: 1.2px;
+    text-transform: uppercase; border: none; padding: 2px 0; }
+  .item.error { background: #3a1520; border: 1px solid var(--red); color: #ffb3b3; }
+  .item.choice { background: #14231c; border: 1px solid var(--green); width: 100%; }
+  .item.choice .pname { font-weight: 700; font-size: 17px; }
+  .item.choice .pmeta { color: var(--dim); font-size: 14px; margin-top: 4px; }
+  .item.choice .preason { margin-top: 8px; font-size: 15px; }
+  .item.choice .pprice { color: var(--gold); font-weight: 800; font-size: 22px; float: right; }
+
+  /* ----- right: the show ----- */
+  #stagePane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #statusStrip {
+    display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+    border-bottom: 1px solid var(--line); background: var(--panel); min-height: 52px;
+  }
+  #orderChip { font-family: ui-monospace, monospace; font-size: 14px; color: var(--dim); }
+  #statusChip {
+    font-size: 13px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase;
+    padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim);
+  }
+  #statusChip.running { color: var(--accent); border-color: var(--accent); }
+  #statusChip.success { color: var(--green); border-color: var(--green); }
+  #statusChip.failure { color: var(--red); border-color: var(--red); }
+  #shotWrap {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 18px; min-height: 0; position: relative; background:
+      radial-gradient(1200px 500px at 50% 0%, #141c29 0%, var(--bg) 70%);
+  }
+  #shot {
+    max-width: 100%; max-height: 100%; border-radius: 10px;
+    border: 1px solid var(--line); box-shadow: 0 18px 60px rgba(0,0,0,.55);
+    transition: opacity .25s; background: #fff;
+  }
+  #shotEmpty { position: absolute; color: var(--dim); font-size: 15px; text-align: center; }
+  #timeline {
+    height: 148px; overflow-y: auto; border-top: 1px solid var(--line);
+    padding: 10px 20px; background: var(--panel); font-size: 13.5px;
+  }
+  .ev { display: flex; gap: 10px; padding: 2.5px 0; color: var(--dim); }
+  .ev .st {
+    flex: 0 0 88px; font-weight: 700; font-size: 11px; letter-spacing: .8px;
+    text-transform: uppercase; padding-top: 2px;
+  }
+  .ev.checkpoint .st { color: var(--green); }
+  .ev.agent .st { color: var(--accent); }
+  .ev.worker .st { color: var(--gold); }
+  .ev .msg { color: var(--text); word-break: break-word; }
+
+  /* ----- footer controls ----- */
+  footer {
+    display: flex; align-items: center; gap: 12px; padding: 14px 22px;
+    border-top: 1px solid var(--line); background: var(--panel);
+  }
+  #micBtn {
+    width: 58px; height: 58px; border-radius: 50%; border: 2px solid var(--accent);
+    background: transparent; color: var(--accent); font-size: 24px; cursor: pointer;
+    transition: all .15s; flex: 0 0 auto;
+  }
+  #micBtn.listening { background: var(--red); border-color: var(--red); color: #fff;
+    animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 14px rgba(255,107,107,.12); } }
+  #micBtn:disabled { opacity: .35; cursor: not-allowed; }
+  #textInput {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+    color: var(--text); font-size: 16px; padding: 13px 16px; outline: none;
+  }
+  #textInput:focus { border-color: var(--accent); }
+  button.action {
+    border: none; border-radius: 10px; padding: 13px 22px; font-size: 15px; font-weight: 700;
+    cursor: pointer; transition: filter .15s;
+  }
+  button.action:hover { filter: brightness(1.15); }
+  #sendBtn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  #confirmBtn { background: var(--green); color: #062b1b; display: none; }
+  #cancelBtn { background: #40222a; color: var(--red); border: 1px solid var(--red); display: none; }
+  .confirming #confirmBtn, .confirming #cancelBtn { display: inline-block; }
+  #hint { color: var(--dim); font-size: 13px; margin-left: 4px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voice <span>Concierge</span> <small style="color:var(--dim);font-weight:400;font-size:13px">buys real hardware with spoken words + x402 USDC</small></h1>
+  <div class="badges" id="badges"></div>
+</header>
+
+<main>
+  <section id="feed" aria-label="conversation"></section>
+  <section id="stagePane">
+    <div id="statusStrip">
+      <span id="statusChip">idle</span>
+      <span id="orderChip"></span>
+      <span style="margin-left:auto;color:var(--dim);font-size:13px" id="merchantChip"></span>
+    </div>
+    <div id="shotWrap">
+      <div id="shotEmpty">The H browser agent's checkout screenshots will appear here.</div>
+      <img id="shot" alt="fulfillment screenshot" style="opacity:0">
+    </div>
+    <div id="timeline" aria-label="fulfillment events"></div>
+  </section>
+</main>
+
+<footer id="controls">
+  <button id="micBtn" title="push to talk">🎤</button>
+  <input id="textInput" placeholder="…or type your order, e.g. “order a pack of 4-40 quarter-inch screws to the office”">
+  <button class="action" id="sendBtn">Send</button>
+  <button class="action" id="confirmBtn">✓ Confirm</button>
+  <button class="action" id="cancelBtn">✗ Cancel</button>
+  <span id="hint"></span>
+</footer>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const feed = $('feed'), timeline = $('timeline');
+  let config = { modes: {}, dry_run: true };
+  let partialEl = null;
+
+  // ---------- WebSocket ----------
+  let ws;
+  function connect() {
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    ws.onmessage = (e) => handle(JSON.parse(e.data));
+    ws.onclose = () => { setHint('reconnecting…'); setTimeout(connect, 1200); };
+    ws.onopen = () => setHint('');
+  }
+  const send = (m) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); };
+
+  // ---------- feed helpers ----------
+  function addItem(cls, text) {
+    const el = document.createElement('div');
+    el.className = 'item ' + cls;
+    el.textContent = text;
+    feed.appendChild(el);
+    feed.scrollTop = feed.scrollHeight;
+    return el;
+  }
+  function setHint(t) { $('hint').textContent = t; }
+
+  // ---------- speech output (sequential queue) ----------
+  const audioQueue = [];
+  let playing = false;
+  function playNext() {
+    if (playing || audioQueue.length === 0) return;
+    playing = true;
+    const next = audioQueue.shift();
+    if (next.audio_b64) {
+      const bytes = Uint8Array.from(atob(next.audio_b64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+      const a = new Audio(url);
+      a.onended = a.onerror = () => { URL.revokeObjectURL(url); playing = false; playNext(); };
+      a.play().catch(() => { playing = false; playNext(); });
+    } else if ('speechSynthesis' in window) {
+      const u = new SpeechSynthesisUtterance(next.text);
+      u.rate = 1.05;
+      u.onend = u.onerror = () => { playing = false; playNext(); };
+      speechSynthesis.speak(u);
+    } else {
+      playing = false; playNext();
+    }
+  }
+  function speak(msg) { audioQueue.push(msg); playNext(); }
+
+  // ---------- server messages ----------
+  function handle(m) {
+    switch (m.type) {
+      case 'config': {
+        config = m;
+        const b = $('badges'); b.innerHTML = '';
+        for (const [k, v] of Object.entries(m.modes)) {
+          const s = document.createElement('span');
+          s.className = 'badge ' + (v === 'live' || v === 'real' ? 'live' : 'mock');
+          s.textContent = k + ': ' + v;
+          b.appendChild(s);
+        }
+        $('merchantChip').textContent = m.merchant_url + (m.dry_run ? '  ·  DRY RUN' : '  ·  REAL ORDERS');
+        if (m.modes.voice !== 'live') { $('micBtn').disabled = true; $('micBtn').title = 'voice mocked — type instead'; }
+        break;
+      }
+      case 'transcript': {
+        if (!m.final) {
+          if (!partialEl) partialEl = addItem('user partial', '');
+          partialEl.textContent = m.text;
+          feed.scrollTop = feed.scrollHeight;
+        } else {
+          if (partialEl) { partialEl.remove(); partialEl = null; }
+          addItem('user', m.text);
+        }
+        break;
+      }
+      case 'say': addItem('say', m.text); speak(m); break;
+      case 'thought': addItem('thought', m.text); break;
+      case 'stage': addItem('stage', '— ' + m.name + (m.detail ? ' · ' + m.detail : '') + ' —'); break;
+      case 'products': addItem('thought', 'Catalog: ' + m.items.length + ' products retrieved from the merchant.'); break;
+      case 'choice': {
+        const el = addItem('choice', '');
+        el.innerHTML = '<span class="pprice"></span><div class="pname"></div>' +
+          '<div class="pmeta"></div><div class="preason"></div>';
+        el.querySelector('.pprice').textContent = m.total_usd;
+        el.querySelector('.pname').textContent = m.product.name;
+        el.querySelector('.pmeta').textContent = 'qty ' + m.quantity + ' → ' + m.recipient;
+        el.querySelector('.preason').textContent = m.reason;
+        break;
+      }
+      case 'await_confirmation':
+        $('controls').classList.add('confirming');
+        setHint('say “yes” or press Confirm');
+        break;
+      case 'order':
+        $('orderChip').textContent = 'order ' + m.order_id + (m.dry_run ? ' (dry run)' : '');
+        setStatus('queued', 'running');
+        $('controls').classList.remove('confirming');
+        setHint('');
+        break;
+      case 'fulfillment_event': {
+        const ev = m.event;
+        const row = document.createElement('div');
+        row.className = 'ev ' + ev.stage;
+        row.innerHTML = '<span class="st"></span><span class="msg"></span>';
+        row.querySelector('.st').textContent = ev.stage;
+        row.querySelector('.msg').textContent = ev.message;
+        timeline.appendChild(row);
+        timeline.scrollTop = timeline.scrollHeight;
+        if (ev.screenshot_url) {
+          const img = $('shot');
+          img.style.opacity = 0;
+          img.onload = () => { img.style.opacity = 1; $('shotEmpty').style.display = 'none'; };
+          img.src = ev.screenshot_url;
+        }
+        break;
+      }
+      case 'order_status': setStatus(m.status, m.final ? (m.outcome || 'success') : 'running'); break;
+      case 'done':
+        $('controls').classList.remove('confirming');
+        setHint(m.outcome === 'failure' ? 'order failed' : 'order complete — speak to start another');
+        break;
+      case 'error':
+        addItem('error', m.message);
+        $('controls').classList.remove('confirming');
+        break;
+      case 'mic': micUi(m.state === 'listening'); break;
+    }
+  }
+  function setStatus(text, cls) {
+    const chip = $('statusChip');
+    chip.textContent = text;
+    chip.className = cls;
+  }
+
+  // ---------- text input ----------
+  function submitText() {
+    const v = $('textInput').value.trim();
+    if (!v) return;
+    $('textInput').value = '';
+    send({ type: 'text_input', text: v });
+  }
+  $('sendBtn').onclick = submitText;
+  $('textInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitText(); });
+  $('confirmBtn').onclick = () => { $('controls').classList.remove('confirming'); setHint(''); send({ type: 'confirm' }); };
+  $('cancelBtn').onclick = () => { $('controls').classList.remove('confirming'); setHint(''); send({ type: 'cancel' }); };
+
+  // ---------- microphone (24 kHz mono PCM16 → base64 chunks) ----------
+  let micOn = false, audioCtx = null, micStream = null, procNode = null;
+  const TARGET_RATE = 24000, CHUNK = 1920; // 80 ms
+  let pcmBuf = new Int16Array(0);
+
+  function micUi(on) {
+    micOn = on;
+    $('micBtn').classList.toggle('listening', on);
+    setHint(on ? 'listening… click to stop' : '');
+  }
+
+  function downsample(f32, fromRate) {
+    if (fromRate === TARGET_RATE) return f32;
+    const ratio = fromRate / TARGET_RATE;
+    const out = new Float32Array(Math.floor(f32.length / ratio));
+    for (let i = 0; i < out.length; i++) {
+      const idx = i * ratio, lo = Math.floor(idx), hi = Math.min(lo + 1, f32.length - 1);
+      out[i] = f32[lo] + (f32[hi] - f32[lo]) * (idx - lo);
+    }
+    return out;
+  }
+  function pushPcm(f32) {
+    const i16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    const merged = new Int16Array(pcmBuf.length + i16.length);
+    merged.set(pcmBuf); merged.set(i16, pcmBuf.length);
+    pcmBuf = merged;
+    while (pcmBuf.length >= CHUNK) {
+      const chunk = pcmBuf.slice(0, CHUNK);
+      pcmBuf = pcmBuf.slice(CHUNK);
+      let bin = '';
+      const bytes = new Uint8Array(chunk.buffer);
+      for (let i = 0; i < bytes.length; i += 8192) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      }
+      send({ type: 'audio', audio: btoa(bin) });
+    }
+  }
+
+  async function startMic() {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (err) {
+      addItem('error', 'Microphone unavailable: ' + err.message);
+      return;
+    }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(micStream);
+    procNode = audioCtx.createScriptProcessor(4096, 1, 1);
+    procNode.onaudioprocess = (e) => {
+      if (!micOn) return;
+      pushPcm(downsample(e.inputBuffer.getChannelData(0), audioCtx.sampleRate));
+    };
+    src.connect(procNode);
+    procNode.connect(audioCtx.destination); // required for onaudioprocess to fire
+    send({ type: 'start_audio' });
+    micUi(true);
+  }
+  function stopMic() {
+    micUi(false);
+    send({ type: 'stop_audio' });
+    if (procNode) { procNode.disconnect(); procNode = null; }
+    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    pcmBuf = new Int16Array(0);
+  }
+  $('micBtn').onclick = () => (micOn ? stopMic() : startMic());
+
+  connect();
+})();
+</script>
+</body>
+</html>

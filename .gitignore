@@ -152,3 +152,6 @@ dist/
 .agents/
 .claude/
 skills-lock.json
+
+# Track C — Voice Concierge: real address book stays local
+concierge/addresses.json
