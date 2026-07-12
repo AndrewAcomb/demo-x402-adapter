@@ -18,7 +18,16 @@ import { declareDiscoveryExtension } from '@x402/extensions/bazaar';
 import { getProduct, listProducts } from './catalog.js';
 import { PurchaseBody, type OrderResponse } from './schemas.js';
 import { enqueueFulfillment, getFulfillment } from './fulfillment.js';
-import { FINAL_STATUSES, createOrder, getOrder, getOrderEvents, ordersConfigured } from './orders.js';
+import {
+  FINAL_STATUSES,
+  createOrder,
+  getOrder,
+  getOrderEvents,
+  listRecentOrders,
+  ordersConfigured,
+  recordOrderPayment,
+} from './orders.js';
+import { DASHBOARD_HTML } from './dashboard.js';
 
 const NETWORK = (process.env.X402_NETWORK ?? 'eip155:84532') as Network;
 const PAY_TO = process.env.X402_PAY_TO as `0x${string}` | undefined;
@@ -49,6 +58,56 @@ const EFFECTIVE_FACILITATOR_URL = facilitatorConfig.url ?? FACILITATOR_URL;
 
 const facilitatorClient = new HTTPFacilitatorClient(facilitatorConfig);
 
+// --- Payment-proof capture ---------------------------------------------------
+//
+// Settlement runs inside the SAME request as the purchase handler (the hono
+// middleware settles after `next()`), but the onAfterSettle hook doesn't know
+// which order_id the handler minted. Correlate the two via the X-Payment
+// header payload: the handler derives a key from the signed payload and maps
+// it to its order_id; the hook re-derives the key from ctx.paymentPayload.
+// Module scope is safe on Vercel because both sides run in one invocation.
+const pendingSettlements = new Map<string, { orderId: string; at: number }>();
+
+/** Deterministic JSON with sorted keys, so both sides derive identical keys. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`);
+  return `{${entries.join(',')}}`;
+}
+
+/**
+ * Correlation key for one signed payment. Prefers the EIP-3009 signature
+ * (unique per payment), then the authorization nonce, then a stable dump of
+ * the whole scheme payload.
+ */
+function paymentCorrelationKey(payload: unknown): string | undefined {
+  try {
+    const p = (payload as { payload?: Record<string, unknown> } | undefined)?.payload;
+    if (!p || typeof p !== 'object') return undefined;
+    if (typeof p.signature === 'string' && p.signature.length > 0) return `sig:${p.signature}`;
+    const auth = p.authorization as { nonce?: unknown } | undefined;
+    if (auth && typeof auth.nonce === 'string' && auth.nonce.length > 0) return `nonce:${auth.nonce}`;
+    return `payload:${stableStringify(p)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Remember order_id → payment correlation; prunes stale entries. */
+function rememberSettlement(key: string, orderId: string): void {
+  const now = Date.now();
+  for (const [k, v] of pendingSettlements) {
+    if (now - v.at > 10 * 60_000) pendingSettlements.delete(k);
+  }
+  // Hard cap so a burst can never grow the map unbounded.
+  if (pendingSettlements.size > 500) pendingSettlements.clear();
+  pendingSettlements.set(key, { orderId, at: now });
+}
+
 const resourceServer = new x402ResourceServer(facilitatorClient)
   .register(NETWORK, new ExactEvmScheme())
   .onVerifyFailure(async (ctx) => {
@@ -56,6 +115,29 @@ const resourceServer = new x402ResourceServer(facilitatorClient)
   })
   .onSettleFailure(async (ctx) => {
     console.error('[x402] settle failed:', ctx.error?.message);
+  })
+  // Best-effort payment-proof capture. Must NEVER break the paid request:
+  // everything is wrapped, and failures only cost us dashboard metadata.
+  .onAfterSettle(async (ctx) => {
+    try {
+      if (!ctx.result?.success) return;
+      const key = paymentCorrelationKey(ctx.paymentPayload);
+      if (!key) return;
+      const pending = pendingSettlements.get(key);
+      if (!pending) return;
+      pendingSettlements.delete(key);
+      if (!ordersConfigured) return;
+      await recordOrderPayment(pending.orderId, {
+        payer: ctx.result.payer ?? undefined,
+        tx: ctx.result.transaction || undefined,
+        // exact scheme: settle amount defaults to the required amount.
+        amount: ctx.result.amount ?? ctx.requirements?.amount ?? undefined,
+        network: (ctx.result.network as string | undefined) ?? (ctx.requirements?.network as string | undefined),
+      });
+      console.log(`[x402] payment proof recorded for order ${pending.orderId}: tx=${ctx.result.transaction}`);
+    } catch (e) {
+      console.error('[x402] payment-proof capture failed (non-fatal):', (e as Error).message);
+    }
   });
 
 // Fallback price when the product id can't be resolved from the path. A paid
@@ -152,6 +234,41 @@ app.get('/products/:id', (c) => {
 });
 
 /**
+ * Recent orders (newest first) for the Mission Control dashboard feed.
+ * Free (never 402s). Returns `configured:false` with an empty list when the
+ * order store isn't wired up, so the dashboard can switch to demo data.
+ */
+app.get('/orders', async (c) => {
+  if (!ordersConfigured) return c.json({ configured: false, orders: [] });
+  const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') ?? 20) || 20));
+  try {
+    const records = await listRecentOrders(limit);
+    return c.json({
+      configured: true,
+      orders: records.map((o) => {
+        const final = FINAL_STATUSES.has(o.status);
+        return {
+          order_id: o.order_id,
+          product_id: o.product_id,
+          product_name: o.product_name ?? getProduct(o.product_id)?.name,
+          quantity: o.quantity,
+          dry_run: o.dry_run,
+          status: o.status,
+          final,
+          outcome: final ? (o.status === 'failed' ? 'failure' : 'success') : undefined,
+          created_at: o.created_at,
+          updated_at: o.updated_at,
+          payment: o.payment,
+        };
+      }),
+    });
+  } catch (e) {
+    console.error('[orders] recent list failed:', (e as Error).message);
+    return c.json({ configured: true, orders: [], error: 'store_unavailable' }, 200);
+  }
+});
+
+/**
  * Order status + live fulfillment progress. Poll-friendly: pass ?since=<seq>
  * to receive only events newer than the ones already seen. Free (never 402s)
  * so the buying agent can narrate the fulfillment run in real time.
@@ -168,6 +285,7 @@ app.get('/orders/:orderId', async (c) => {
     return c.json({
       order_id: order.order_id,
       product_id: order.product_id,
+      product_name: order.product_name ?? getProduct(order.product_id)?.name,
       quantity: order.quantity,
       dry_run: order.dry_run,
       status: order.status,
@@ -178,6 +296,7 @@ app.get('/orders/:orderId', async (c) => {
       created_at: order.created_at,
       updated_at: order.updated_at,
       result: order.result,
+      payment: order.payment,
       events,
       next_since: since + events.length,
     });
@@ -194,6 +313,16 @@ app.get('/orders/:orderId', async (c) => {
     created_at: intent.created_at,
   });
 });
+
+// --- Mission Control dashboard ----------------------------------------------
+// Self-contained HTML (inline CSS/JS, no external assets) embedded as a
+// module constant, so it serves identically from the Vercel function.
+// Free routes — never behind the payment middleware.
+//   /live                  live ops dashboard
+//   /live?replay=ORDER_ID  re-animate a past order's event history
+//   /live/orders/:id       deep link to one order
+app.get('/live', (c) => c.html(DASHBOARD_HTML));
+app.get('/live/orders/:orderId', (c) => c.html(DASHBOARD_HTML));
 
 // Client-compat shim: our payment middleware emits the 402 challenge only in
 // the PAYMENT-REQUIRED header with an empty JSON body, but some official x402
@@ -315,6 +444,21 @@ app.post('/products/:id/purchase', async (c) => {
     } catch (e) {
       console.error('[orders] store write failed:', (e as Error).message);
     }
+  }
+
+  // Register this order for payment-proof capture: settlement runs right
+  // after this handler returns, and the onAfterSettle hook looks the order
+  // up by a key derived from the signed X-Payment payload. Best-effort —
+  // never let dashboard metadata break a paid request.
+  try {
+    const header = c.req.header('payment-signature') ?? c.req.header('x-payment');
+    if (header && queued) {
+      const decoded = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
+      const key = paymentCorrelationKey(decoded);
+      if (key) rememberSettlement(key, intent.order_id);
+    }
+  } catch (e) {
+    console.error('[x402] payment correlation setup failed (non-fatal):', (e as Error).message);
   }
 
   const mode = parsed.data.dry_run
