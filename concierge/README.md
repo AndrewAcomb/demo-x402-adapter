@@ -83,7 +83,9 @@ Order matters — each step is independently reversible:
    needed. Keep `DEMO_DRY_RUN=1`: money moves, but fulfillment stops at
    the merchant's order-review screen.
 4. **Voice live:** set `GRADIUM_API_KEY`. Chrome, localhost (secure
-   context) — click the mic, speak, watch the live transcript.
+   context) — click the mic, speak, watch the live transcript. The mic
+   is push-to-talk per utterance: click it again to speak the "yes"
+   confirmation (the Confirm button always works as a fallback).
 5. **Stage settings:** raise `MOCK_EVENT_MS` irrelevant now; real events
    arrive as the H worker emits them. For a REAL shipped order:
    `DEMO_DRY_RUN=0 ALLOW_REAL_PURCHASE=1` and keep `MAX_SPEND_USD` tight.
