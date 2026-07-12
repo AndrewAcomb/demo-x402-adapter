@@ -79,6 +79,10 @@ const app = new Hono();
 app.get('/', (c) =>
   c.json({
     name: 'BuyWith402',
+    notice:
+      'HACKATHON DEMO — this is a proof-of-concept built for a hackathon. Do not rely ' +
+      'on it outside that context: no SLAs, no support, orders and the service itself ' +
+      'may disappear at any time. Real purchases are at your own risk.',
     description:
       'Buy real physical products (currently McMaster-Carr hardware) with one x402 ' +
       'USDC payment on Base. No account needed — the payment is the identity. All ' +
@@ -225,7 +229,8 @@ app.use(
           'BuyWith402 (buywith402.com): buy any product from the catalog with one x402 ' +
           'USDC payment and get an order id with queued fulfillment. Prices are ' +
           'all-inclusive (US shipping and tax included). Browse products free at ' +
-          'GET /products; check status at GET /orders/{order_id}.',
+          'GET /products; check status at GET /orders/{order_id}. HACKATHON DEMO — ' +
+          'not for use outside a hackathon context; no SLAs or support.',
         serviceName: 'BuyWith402',
         // Max 5 tags (32 chars each) — extras are dropped by sanitizeTags.
         tags: ['commerce', 'shopping', 'physical', 'hardware', 'marketplace'],
