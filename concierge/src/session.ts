@@ -171,8 +171,7 @@ export class Session {
       // 3. Browse the catalog.
       this.send({ type: 'stage', name: 'browsing', detail: `${this.cfg.merchantUrl}/products` });
       const products = await this.merchant.products();
-      this.send({ type: 'products', items: products });
-      this.send({ type: 'thought', text: `Catalog has ${products.length} products.` });
+      this.send({ type: 'products', items: products }); // the UI prints the count
 
       // 4. Choose.
       this.send({ type: 'stage', name: 'choosing' });
