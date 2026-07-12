@@ -31,6 +31,25 @@ export const PurchaseBody = z.object({
 });
 export type PurchaseBody = z.infer<typeof PurchaseBody>;
 
+/**
+ * Body for POST /merchants (admin-only): onboard any store URL as a set of
+ * x402-purchasable products. nickname must match the python-side registry
+ * pattern; max_products caps how many items the browse extracts.
+ */
+export const OnboardMerchantBody = z.object({
+  url: z
+    .url()
+    .max(500)
+    .refine((u) => u.startsWith('https://'), 'url must be https'),
+  nickname: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{1,30}$/, 'lowercase letters, digits, hyphens; 2-31 chars')
+    .optional(),
+  display_name: z.string().min(1).max(80).optional(),
+  max_products: z.number().int().min(1).max(10).default(5),
+});
+export type OnboardMerchantBody = z.infer<typeof OnboardMerchantBody>;
+
 /** Reply shape after a paid purchase settles successfully. */
 export const OrderResponse = z.object({
   order_id: z.uuid(),

@@ -7,7 +7,7 @@
  * entrypoints handle their own wiring.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { paymentMiddleware, x402ResourceServer } from '@x402/hono';
 import type { Network } from '@x402/core/types';
 import { HTTPFacilitatorClient } from '@x402/core/server';
@@ -15,10 +15,17 @@ import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { createFacilitatorConfig } from '@coinbase/x402';
 import { declareDiscoveryExtension } from '@x402/extensions/bazaar';
 
-import { getProduct, listProducts } from './catalog.js';
-import { PurchaseBody, type OrderResponse } from './schemas.js';
+import { getMergedProduct, listMergedProducts } from './catalogStore.js';
+import { OnboardMerchantBody, PurchaseBody, type OrderResponse } from './schemas.js';
 import { enqueueFulfillment, getFulfillment } from './fulfillment.js';
 import { FINAL_STATUSES, createOrder, getOrder, getOrderEvents, ordersConfigured } from './orders.js';
+import {
+  ONBOARD_FINAL_STATUSES,
+  createOnboardJob,
+  getOnboardEvents,
+  getOnboardJob,
+  listOnboardedMerchants,
+} from './onboarding.js';
 
 const NETWORK = (process.env.X402_NETWORK ?? 'eip155:84532') as Network;
 const PAY_TO = process.env.X402_PAY_TO as `0x${string}` | undefined;
@@ -63,10 +70,16 @@ const resourceServer = new x402ResourceServer(facilitatorClient)
 // verified payment before settlement — so no money moves on the fallback.
 const FALLBACK_PRICE = process.env.X402_PRICE ?? '$0.10';
 
-/** Per-product price resolved from the catalog at challenge time. */
-const priceForRequest = (ctx: { path: string }) => {
+/**
+ * Per-product price resolved from the merged (static + dynamic) catalog at
+ * challenge time. @x402/core awaits DynamicPrice functions, so the async
+ * Redis-backed lookup is safe here. The same lookup runs again on the paid
+ * retry; a payment whose amount no longer matches is rejected, and unknown
+ * ids fall back to a price whose payment the handler cancels via 404.
+ */
+const priceForRequest = async (ctx: { path: string }) => {
   const match = ctx.path.match(/^\/products\/([^/]+)\/purchase$/);
-  const product = match ? getProduct(decodeURIComponent(match[1])) : undefined;
+  const product = match ? await getMergedProduct(decodeURIComponent(match[1])) : undefined;
   return product?.price_usd ?? FALLBACK_PRICE;
 };
 
@@ -121,6 +134,27 @@ app.get('/', (c) =>
           '(status ready_to_place or placed) or "failure" (status failed, only after ' +
           'all retries are exhausted).',
       },
+      {
+        method: 'GET',
+        path: '/merchants',
+        description: 'Merchants onboarded through the Merchant Factory, with product counts (free).',
+      },
+      {
+        method: 'POST',
+        path: '/merchants',
+        description:
+          'Merchant Factory (admin-only, X-Admin-Key header): onboard any store URL. A ' +
+          'browser agent extracts a validated catalog and its products go live in ' +
+          'GET /products, x402-purchasable, within minutes. Body: { url, nickname?, ' +
+          'display_name?, max_products? }. Returns a job_id.',
+      },
+      {
+        method: 'GET',
+        path: '/merchants/jobs/{job_id}',
+        description:
+          'Onboarding-job status + live progress events (free). Same poll contract as ' +
+          '/orders/{order_id}: pass ?since=<next_since>, keep polling while final=false.',
+      },
     ],
     dry_run:
       'Purchases are REAL by default: fulfillment places the merchant order and the ' +
@@ -142,10 +176,12 @@ app.get('/health', (c) =>
 const PRICING_NOTE =
   'All prices are all-inclusive: US shipping and tax are included. The price shown is the full x402 charge.';
 
-app.get('/products', (c) => c.json({ pricing_note: PRICING_NOTE, products: listProducts() }));
+app.get('/products', async (c) =>
+  c.json({ pricing_note: PRICING_NOTE, products: await listMergedProducts() }),
+);
 
-app.get('/products/:id', (c) => {
-  const product = getProduct(c.req.param('id'));
+app.get('/products/:id', async (c) => {
+  const product = await getMergedProduct(c.req.param('id'));
   if (!product) return c.json({ error: 'not_found' }, 404);
   const { source_url, ...safe } = product;
   return c.json({ ...safe, pricing_note: PRICING_NOTE });
@@ -193,6 +229,95 @@ app.get('/orders/:orderId', async (c) => {
     status: 'queued' as const,
     created_at: intent.created_at,
   });
+});
+
+// --- Merchant Factory: onboard any store as x402 products ------------------
+
+/**
+ * Admin gate for onboarding. Returns an error Response when the request must
+ * be rejected, undefined when it may proceed. 503 when the feature is not
+ * configured at all, 401 on a bad key.
+ */
+const onboardingDenied = (c: Context) => {
+  const expected = process.env.ONBOARD_ADMIN_KEY;
+  if (!expected) {
+    return c.json({ error: 'onboarding_disabled', message: 'ONBOARD_ADMIN_KEY is not set on the server.' }, 503);
+  }
+  if (c.req.header('x-admin-key') !== expected) {
+    return c.json({ error: 'unauthorized', message: 'Missing or wrong X-Admin-Key header.' }, 401);
+  }
+  return undefined;
+};
+
+/**
+ * Queue a merchant-onboarding job: a browser agent visits the URL, extracts
+ * a validated catalog, and publishes the products into the live (dynamic)
+ * catalog. Admin-only — this triggers real browsing spend. Free (never 402s).
+ */
+app.post('/merchants', async (c) => {
+  const denied = onboardingDenied(c);
+  if (denied) return denied;
+  if (!ordersConfigured) {
+    return c.json({ error: 'store_unavailable', message: 'Redis order store is not configured.' }, 503);
+  }
+  const raw = await c.req.json().catch(() => ({}));
+  const parsed = OnboardMerchantBody.safeParse(raw);
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
+  }
+  try {
+    const job = await createOnboardJob(parsed.data);
+    return c.json(
+      {
+        job_id: job.job_id,
+        status: job.status,
+        url: job.url,
+        poll: `/merchants/jobs/${job.job_id}`,
+        message: 'Onboarding queued. Poll the job URL to watch the browser agent build the catalog.',
+      },
+      202,
+    );
+  } catch (e) {
+    console.error('[onboard] job create failed:', (e as Error).message);
+    return c.json({ error: 'store_unavailable', message: 'Could not queue the onboarding job.' }, 503);
+  }
+});
+
+/**
+ * Onboarding-job status + live progress events. Same poll contract as
+ * GET /orders/{id}: pass ?since=<next_since>, keep polling while final=false.
+ */
+app.get('/merchants/jobs/:jobId', async (c) => {
+  if (!ordersConfigured) return c.json({ error: 'not_found' }, 404);
+  const jobId = c.req.param('jobId');
+  const job = await getOnboardJob(jobId);
+  if (!job) return c.json({ error: 'not_found' }, 404);
+  const since = Math.max(0, Number(c.req.query('since') ?? 0) || 0);
+  const events = await getOnboardEvents(jobId, since);
+  const final = ONBOARD_FINAL_STATUSES.has(job.status);
+  return c.json({
+    job_id: job.job_id,
+    url: job.url,
+    status: job.status,
+    final,
+    outcome: final ? (job.status === 'failed' ? 'failure' : 'success') : undefined,
+    created_at: job.created_at,
+    updated_at: job.updated_at,
+    result: job.result,
+    events,
+    next_since: since + events.length,
+  });
+});
+
+/** Onboarded merchants with product counts (free). */
+app.get('/merchants', async (c) => {
+  if (!ordersConfigured) return c.json({ merchants: [] });
+  try {
+    return c.json({ merchants: await listOnboardedMerchants() });
+  } catch (e) {
+    console.error('[onboard] merchants list failed:', (e as Error).message);
+    return c.json({ merchants: [] });
+  }
 });
 
 // Client-compat shim: our payment middleware emits the 402 challenge only in
@@ -293,7 +418,11 @@ app.use(
 );
 
 app.post('/products/:id/purchase', async (c) => {
-  const product = getProduct(c.req.param('id'));
+  // Merged lookup (static wins). If a dynamic product vanished from Redis or
+  // the cache since the challenge was issued, this 404 cancels the verified
+  // payment before settlement — we never settle against a price we can no
+  // longer prove.
+  const product = await getMergedProduct(c.req.param('id'));
   if (!product) return c.json({ error: 'not_found' }, 404);
 
   const raw = await c.req.json().catch(() => ({}));

@@ -22,7 +22,12 @@ const REST_TOKEN = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_RE
 
 export const ordersConfigured = Boolean(REST_URL && REST_TOKEN);
 
-async function redis(command: (string | number)[]): Promise<unknown> {
+/**
+ * Run one Redis command via the Upstash REST API. Shared by the order store
+ * (this file), the dynamic catalog (catalogStore.ts), and the merchant
+ * onboarding store (onboarding.ts).
+ */
+export async function redisCommand(command: (string | number)[]): Promise<unknown> {
   if (!REST_URL || !REST_TOKEN) throw new Error('Order store not configured (KV_REST_API_URL/TOKEN)');
   const res = await fetch(REST_URL, {
     method: 'POST',
@@ -82,13 +87,13 @@ export async function createOrder(
     product_name: product.name,
   };
   const flat = Object.entries(record).flat();
-  await redis(['HSET', `order:${orderId}`, ...flat]);
-  await redis(['EXPIRE', `order:${orderId}`, 60 * 60 * 24 * 7]);
-  await redis(['LPUSH', 'orders:queue', orderId]);
+  await redisCommand(['HSET', `order:${orderId}`, ...flat]);
+  await redisCommand(['EXPIRE', `order:${orderId}`, 60 * 60 * 24 * 7]);
+  await redisCommand(['LPUSH', 'orders:queue', orderId]);
 }
 
 export async function getOrder(orderId: string): Promise<OrderRecord | undefined> {
-  const raw = (await redis(['HGETALL', `order:${orderId}`])) as string[] | null;
+  const raw = (await redisCommand(['HGETALL', `order:${orderId}`])) as string[] | null;
   if (!raw || raw.length === 0) return undefined;
   const h: Record<string, string> = {};
   for (let i = 0; i < raw.length; i += 2) h[raw[i]] = raw[i + 1];
@@ -108,7 +113,7 @@ export async function getOrder(orderId: string): Promise<OrderRecord | undefined
 
 /** Events at or after `since` (a seq number); returns [] when none. */
 export async function getOrderEvents(orderId: string, since = 0): Promise<OrderEvent[]> {
-  const raw = (await redis(['LRANGE', `order:${orderId}:events`, since, -1])) as string[] | null;
+  const raw = (await redisCommand(['LRANGE', `order:${orderId}:events`, since, -1])) as string[] | null;
   if (!raw) return [];
   return raw
     .map((line, i) => {
