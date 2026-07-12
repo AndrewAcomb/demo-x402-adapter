@@ -35,6 +35,25 @@ settle it, use any x402 client — Coinbase's `@x402/fetch` and
 `@x402/evm`, `x402-axios`, or the merchant-agnostic `mppx` CLI — with
 a Base wallet holding USDC.
 
+## x402 Shopper (MCP) — the buyer side
+
+The `mcp/` directory is a standalone **local stdio MCP server** that gives any
+MCP agent (Claude Code, Cursor, Codex) a USDC wallet to discover x402
+merchants, comparison-shop, and buy physical goods from this adapter — with the
+wallet key staying on the user's machine and only HTTP 402 on the wire. It is
+dry-run by default and streams live fulfillment events + checkout screenshots
+back to the agent over MCP progress notifications.
+
+Install into Claude Code (mocked, offline):
+
+```bash
+claude mcp add x402-shopper --env MOCK_MERCHANT=1 --env MOCK_PAY=1 \
+  -- npx -y tsx "$(pwd)/mcp/src/server.ts"
+```
+
+See [mcp/README.md](./mcp/README.md) for tools, config, safety model, and
+one-liners for Cursor/Codex.
+
 ## Deploy
 
 Ships anywhere Hono runs: Node (`npm start`), Bun (`bun src/server.ts`),
