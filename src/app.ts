@@ -143,10 +143,11 @@ app.get('/', (c) =>
         method: 'POST',
         path: '/merchants',
         description:
-          'Merchant Factory (admin-only, X-Admin-Key header): onboard any store URL. A ' +
-          'browser agent extracts a validated catalog and its products go live in ' +
-          'GET /products, x402-purchasable, within minutes. Body: { url, nickname?, ' +
-          'display_name?, max_products? }. Returns a job_id.',
+          'Merchant Factory: onboard any store URL as agent-buyable products. Paid ' +
+          'endpoint ($5.00 x402 charge — you are funding the browser-agent run). A ' +
+          'browser agent extracts a validated catalog, estimates tax/fulfillment ' +
+          'economics, and its products go live in GET /products within minutes. Body: ' +
+          '{ url, nickname?, display_name?, max_products? }. Returns a job_id.',
       },
       {
         method: 'GET',
@@ -257,13 +258,11 @@ const onboardingDenied = (c: Context) => {
 };
 
 /**
- * Queue a merchant-onboarding job: a browser agent visits the URL, extracts
- * a validated catalog, and publishes the products into the live (dynamic)
- * catalog. Admin-only — this triggers real browsing spend. Free (never 402s).
+ * Shared onboarding-job creation used by both the public paid route
+ * (POST /merchants, behind the x402 middleware) and the undocumented free
+ * admin bypass (POST /admin/merchants, X-Admin-Key).
  */
-app.post('/merchants', async (c) => {
-  const denied = onboardingDenied(c);
-  if (denied) return denied;
+const handleOnboardRequest = async (c: Context) => {
   if (!ordersConfigured) {
     return c.json({ error: 'store_unavailable', message: 'Redis order store is not configured.' }, 503);
   }
@@ -288,6 +287,13 @@ app.post('/merchants', async (c) => {
     console.error('[onboard] job create failed:', (e as Error).message);
     return c.json({ error: 'store_unavailable', message: 'Could not queue the onboarding job.' }, 503);
   }
+};
+
+/** Undocumented free admin bypass; not matched by the payment middleware. */
+app.post('/admin/merchants', async (c) => {
+  const denied = onboardingDenied(c);
+  if (denied) return denied;
+  return handleOnboardRequest(c);
 });
 
 /**
@@ -349,9 +355,24 @@ app.use(async (c, next) => {
   }
 });
 
+const ONBOARDING_PRICE = process.env.X402_ONBOARDING_PRICE ?? '$5.00';
+
 app.use(
   paymentMiddleware(
     {
+      'POST /merchants': {
+        accepts: {
+          scheme: 'exact',
+          price: ONBOARDING_PRICE,
+          network: NETWORK,
+          payTo: PAY_TO,
+        },
+        description:
+          'Onboard any store URL as live, agent-buyable products. Pay once; a browser ' +
+          'agent reads the store, estimates its economics, and publishes an itemized ' +
+          'catalog within minutes. Body: { url, nickname?, display_name?, max_products? }.',
+        serviceName: 'BuyWith402',
+      },
       'POST /products/:id/purchase': {
         accepts: {
           scheme: 'exact',
@@ -423,6 +444,9 @@ app.use(
     resourceServer,
   ),
 );
+
+/** Public paid onboarding: settlement runs before this handler executes. */
+app.post('/merchants', handleOnboardRequest);
 
 app.post('/products/:id/purchase', async (c) => {
   // Merged lookup (static wins). If a dynamic product vanished from Redis or

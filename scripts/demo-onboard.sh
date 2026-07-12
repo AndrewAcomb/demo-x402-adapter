@@ -18,8 +18,8 @@ NICK="${2:-}"
 body=$(jq -n --arg url "$URL" --arg nick "$NICK" \
   '{url: $url} + (if $nick != "" then {nickname: $nick} else {} end)')
 
-echo "==> POST $BASE/merchants"
-job=$(curl -sS -X POST "$BASE/merchants" \
+echo "==> POST $BASE/admin/merchants (admin bypass)"
+job=$(curl -sS -X POST "$BASE/admin/merchants" \
   -H 'content-type: application/json' \
   -H "x-admin-key: $KEY" \
   -d "$body")
