@@ -76,6 +76,26 @@ class MerchantMenu(BaseModel):
     ordering_available: bool
     pickup_available: bool
     delivery_available: bool
+    estimated_tax_rate_percent: float = Field(
+        default=0.0,
+        ge=0,
+        le=20,
+        description=(
+            "Ballpark sales-tax rate for this merchant in percent, from real "
+            "signals: tax shown in the flow, the merchant's stated location, or "
+            "the typical rate for that locale. 0 only if genuinely untaxed."
+        ),
+    )
+    estimated_fulfillment_fee_usd: float = Field(
+        default=0.0,
+        ge=0,
+        le=60,
+        description=(
+            "Ballpark per-order fulfillment cost in USD from real signals: a "
+            "displayed delivery/shipping fee, or the typical fee for this "
+            "platform and order type. 0 for pickup with no visible fee."
+        ),
+    )
     blocker: str | None = None
     products: list[MenuItem] = Field(max_length=200)
 
@@ -154,10 +174,22 @@ close the dialog without adding it. Skip any item whose price you cannot
 verify or that displays as 0.00. Never invent or round names or prices.
 Record the menu section each item appears under.
 """.strip()
+    economics_task = """
+ECONOMICS — ballpark two numbers from real signals only:
+estimated_tax_rate_percent: the sales-tax rate this merchant will charge,
+from tax amounts visible anywhere in the flow, the merchant's stated
+city/state, or the typical rate for that locale (e.g. San Francisco ~8.6).
+estimated_fulfillment_fee_usd: the per-order delivery/shipping cost, from a
+displayed fee or the typical fee for this platform and order type; use 0
+for pickup with no visible fee. Honest ballparks, never fabricated
+precision — these become price components.
+""".strip()
     return f"""
 You are cataloging an online ordering page so software can order from it
 later. The page is {url}. Do NOT sign in, do NOT add anything to a cart,
 do NOT begin checkout, and do NOT enter any personal data.
+
+{economics_task}
 
 INITIAL AUDIT — DO THIS BEFORE ANY OTHER BROWSER ACTION:
 Allow the current page to render, but do not navigate, click, type, or
@@ -475,6 +507,9 @@ def run_onboarding(
         "merchant": merchant.model_dump(mode="json"),
         "pickup_available": menu.pickup_available,
         "delivery_available": menu.delivery_available,
+        "fulfillment": fulfillment,
+        "estimated_tax_rate_percent": menu.estimated_tax_rate_percent,
+        "estimated_fulfillment_fee_usd": menu.estimated_fulfillment_fee_usd,
         "products": products,
     }
     output_path = save_catalog(payload, output_dir, merchant.catalog_short_name)

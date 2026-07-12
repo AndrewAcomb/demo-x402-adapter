@@ -174,7 +174,10 @@ app.get('/health', (c) =>
 );
 
 const PRICING_NOTE =
-  'All prices are all-inclusive: US shipping and tax are included. The price shown is the full x402 charge.';
+  'All prices are all-inclusive: estimated tax and the item’s fulfillment cost ' +
+  '(shipping or delivery; zero for pickup) are included. The price shown is the full ' +
+  'x402 charge. Each item’s fulfillment field says how it reaches you — fixed ' +
+  'per item, not selectable at purchase.';
 
 app.get('/products', async (c) =>
   c.json({ pricing_note: PRICING_NOTE, products: await listMergedProducts() }),
