@@ -8,7 +8,9 @@ import json
 import os
 import re
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -87,6 +89,20 @@ class MerchantMenu(BaseModel):
             raise ValueError("orderable catalog must contain at least one item")
         self.products.sort(key=lambda item: item.position)
         return self
+
+
+class OnboardError(RuntimeError):
+    """Onboarding failed for a reason worth reporting to the caller."""
+
+
+@dataclass
+class OnboardResult:
+    """Successful onboarding: registered merchant + validated catalog."""
+
+    merchant: Merchant
+    payload: dict[str, object]
+    output_path: Path
+    product_count: int
 
 
 def save_catalog(
@@ -169,65 +185,54 @@ package quantity 1, exact price, and the three-letter currency code.
 """.strip()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Onboard an ordering page as a merchant and build its catalog."
-    )
-    parser.add_argument("--url", help="Ordering page URL (omit with --refresh)")
-    parser.add_argument("--nickname", help="Merchant nickname, e.g. littlestar")
-    parser.add_argument(
-        "--refresh",
-        action="store_true",
-        help="Rebuild the catalog for an already-registered merchant",
-    )
-    parser.add_argument("--count", type=int, default=5)
-    parser.add_argument("--max-price", type=float, default=15.0)
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        help="Enumerate the whole menu at depth one instead of a small sample",
-    )
-    parser.add_argument("--output-dir", type=Path, default=RUNTIME / "catalogs")
-    parser.add_argument("--sessions-dir", type=Path, default=RUNTIME / "sessions")
-    parser.add_argument("--log-file", type=Path, default=RUNTIME / "logs/app.log")
-    parser.add_argument("--proxy", choices=("true", "false"), default="true")
-    parser.add_argument("--h-environment", "--environment", dest="h_environment")
-    args = parser.parse_args()
+def run_onboarding(
+    url: str,
+    nickname: str | None = None,
+    *,
+    count: int = 5,
+    max_price: float = 15.0,
+    full: bool = False,
+    output_dir: Path = RUNTIME / "catalogs",
+    sessions_dir: Path = RUNTIME / "sessions",
+    log_file: Path = RUNTIME / "logs/app.log",
+    proxy: bool = True,
+    h_environment: str | None = None,
+    on_event: Callable[[str, str], None] | None = None,
+) -> OnboardResult:
+    """Onboard `url` as a merchant: browse it with H, validate the catalog,
+    register the merchant, and save the catalog JSON.
+
+    Library entry point used by both the CLI (main below) and
+    onboard_worker.py. `on_event(stage, message)` receives progress
+    milestones; it must never raise (failures are swallowed).
+
+    Raises OnboardError on any onboarding failure (bad input, ordering
+    unavailable, agent run failed, empty catalog).
+    """
+
+    def emit(stage: str, message: str) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(stage, message)
+        except Exception:  # noqa: BLE001 — progress reporting must not kill a run
+            pass
 
     if not os.environ.get("HAI_API_KEY"):
-        parser.error("HAI_API_KEY is not set; let direnv load this project first")
-    if not args.full and not 1 <= args.count <= 10:
-        parser.error("--count must be between 1 and 10")
+        raise OnboardError("HAI_API_KEY is not set")
+    if not re.match(r"^https://", url):
+        raise OnboardError("url must be an https URL")
+    if not full and not 1 <= count <= 10:
+        raise OnboardError("count must be between 1 and 10")
+    nickname = nickname or nickname_from_url(url)
+    existing = load_registry().get(nickname)
+    if existing is not None and existing.start_url != url:
+        raise OnboardError(
+            f"merchant {nickname!r} already exists with a different URL; "
+            "pick another nickname"
+        )
 
-    if args.refresh:
-        if not args.nickname:
-            parser.error("--refresh requires --nickname")
-        try:
-            merchant = get_merchant(args.nickname)
-        except KeyError as exc:
-            parser.error(str(exc))
-        if merchant.kind == "mcmaster":
-            parser.error("mcmaster catalogs are refreshed by prepare_purchase.py")
-        url = merchant.start_url
-        nickname = merchant.nickname
-        if merchant.catalog_mode == "full":
-            args.full = True
-    else:
-        if not args.url:
-            parser.error("--url is required unless --refresh is used")
-        url = args.url
-        if not re.match(r"^https://", url):
-            parser.error("--url must be an https URL")
-        nickname = args.nickname or nickname_from_url(url)
-        if nickname in load_registry() and not args.refresh:
-            existing = load_registry()[nickname]
-            if existing.start_url != url:
-                parser.error(
-                    f"merchant {nickname!r} already exists with a different URL; "
-                    "pick another --nickname"
-                )
-
-    demo_session_id, artifact_dir = mint_demo_session(args.sessions_dir)
+    demo_session_id, artifact_dir = mint_demo_session(sessions_dir)
     request_id = "R001"
     artifact_prefix = f"{demo_session_id}-{request_id}"
     timing_path = artifact_dir / f"{artifact_prefix}-timing.jsonl"
@@ -250,7 +255,8 @@ def main() -> None:
             timing_path.chmod(0o600)
 
     record_timing("run-started", merchant=nickname, url=url)
-    enable_tee(args.log_file, demo_session_id, request_id)
+    emit("onboard", f"Onboarding merchant {nickname!r} from {url}")
+    enable_tee(log_file, demo_session_id, request_id)
     local_banner(f"ONBOARDING MERCHANT {nickname!r} FROM {url}", component="Onboard")
     local_banner(
         f"{demo_session_id}: ARTIFACTS WILL BE SAVED UNDER {artifact_dir.resolve()}",
@@ -291,6 +297,7 @@ def main() -> None:
         )
         path.chmod(0o600)
         captured_checkpoints.add(checkpoint)
+        emit("checkpoint", checkpoint)
         record_timing(checkpoint, artifact=path.name, image_event_index=image_index)
         local_banner(
             f"{demo_session_id}: SAVED CHECKPOINT {checkpoint} TO {path.resolve()}",
@@ -303,19 +310,20 @@ def main() -> None:
     tools = [capture_onboarding_checkpoint]
 
     client = Client()
-    browser_runtime = HBrowserRuntime.resolve(client, args.h_environment)
+    browser_runtime = HBrowserRuntime.resolve(client, h_environment)
     session = browser_runtime.start_session(
         client,
         start_url=url,
-        network={} if args.proxy == "false" else None,
+        network=None if proxy else {},
         answer_schema=MerchantMenu,
         tools=tools,
-        messages=onboarding_message(url, args.count, args.max_price, args.full),
-        max_steps=45 if args.full else 25,
-        max_time_s=540 if args.full else 300,
+        messages=onboarding_message(url, count, max_price, full),
+        max_steps=45 if full else 25,
+        max_time_s=540 if full else 300,
     )
     snapshot = session.get()
     record_timing("h-session-created", h_session_id=session.id)
+    emit("live_view", f"Watch the agent live: {snapshot.agent_view_url}")
     print(f"Demo session: {demo_session_id}", flush=True)
     print(f"H session: {session.id}", flush=True)
     print(f"H Agent View: {snapshot.agent_view_url}", flush=True)
@@ -329,7 +337,7 @@ def main() -> None:
         with ThreadPoolExecutor(max_workers=1) as executor:
             waiter = executor.submit(
                 session.wait_for_completion,
-                timeout_seconds=570 if args.full else 330,
+                timeout_seconds=570 if full else 330,
                 tools=tools,
             )
             for event in session.stream():
@@ -375,6 +383,7 @@ def main() -> None:
 
     print(f"Status: {result.status}")
     print(f"Outcome: {result.outcome}")
+    emit("agent", f"Browse finished: status={result.status} outcome={result.outcome}")
     if result.error:
         print(f"Error: {result.error}")
     if result.answer is None:
@@ -384,7 +393,10 @@ def main() -> None:
             success=False,
             error_type="MissingStructuredAnswer",
         )
-        raise SystemExit(1)
+        raise OnboardError(
+            "the browse run returned no structured catalog "
+            f"(outcome={result.outcome}, error={result.error or 'none'})"
+        )
     menu = result.answer
     if not menu.ordering_available:
         record_timing(
@@ -394,14 +406,16 @@ def main() -> None:
             error_type="OrderingUnavailable",
         )
         print(f"FAILURE: ordering unavailable — {menu.blocker or 'no blocker text'}")
-        raise SystemExit(2)
+        raise OnboardError(
+            f"ordering unavailable — {menu.blocker or 'no blocker text'}"
+        )
     if result.outcome != "success":
         record_timing(
             "session-completed",
             outcome=str(result.outcome),
             success=False,
         )
-        raise SystemExit(1)
+        raise OnboardError(f"browse run did not succeed (outcome={result.outcome})")
 
     fulfillment = "pickup" if menu.pickup_available else "shipping"
     merchant = Merchant(
@@ -412,9 +426,10 @@ def main() -> None:
         fulfillment=fulfillment,
         requires_login=False,
         catalog_short_name=nickname,
-        catalog_mode="full" if args.full else "sample",
+        catalog_mode="full" if full else "sample",
     )
     save_merchant(merchant)
+    emit("merchant", f"Registered merchant {nickname!r} ({menu.merchant_display_name})")
 
     kept: list[MenuItem] = []
     seen_names: set[str] = set()
@@ -433,7 +448,7 @@ def main() -> None:
         print(f"Dropped {len(dropped)} item(s): {'; '.join(dropped)}")
     if not kept:
         print("FAILURE: every returned item was zero-priced or duplicate.")
-        raise SystemExit(2)
+        raise OnboardError("every returned item was zero-priced or duplicate")
 
     products = []
     seen_ids: set[str] = set()
@@ -462,13 +477,17 @@ def main() -> None:
         "delivery_available": menu.delivery_available,
         "products": products,
     }
-    output_path = save_catalog(payload, args.output_dir, merchant.catalog_short_name)
+    output_path = save_catalog(payload, output_dir, merchant.catalog_short_name)
     record_timing(
         "session-completed",
         outcome=str(result.outcome),
         success=True,
         catalog=output_path.name,
         product_count=len(products),
+    )
+    emit(
+        "catalog",
+        f"Validated catalog saved: {output_path.name} ({len(products)} products)",
     )
     print("\nValidated catalog:")
     print(json.dumps(payload, indent=2))
@@ -482,6 +501,77 @@ def main() -> None:
         + hyperlink("[catalog json]", output_path)
         + f" · next: ./h402 cart add -i --merchant {nickname}"
     )
+    return OnboardResult(
+        merchant=merchant,
+        payload=payload,
+        output_path=output_path,
+        product_count=len(products),
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Onboard an ordering page as a merchant and build its catalog."
+    )
+    parser.add_argument("--url", help="Ordering page URL (omit with --refresh)")
+    parser.add_argument("--nickname", help="Merchant nickname, e.g. littlestar")
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Rebuild the catalog for an already-registered merchant",
+    )
+    parser.add_argument("--count", type=int, default=5)
+    parser.add_argument("--max-price", type=float, default=15.0)
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Enumerate the whole menu at depth one instead of a small sample",
+    )
+    parser.add_argument("--output-dir", type=Path, default=RUNTIME / "catalogs")
+    parser.add_argument("--sessions-dir", type=Path, default=RUNTIME / "sessions")
+    parser.add_argument("--log-file", type=Path, default=RUNTIME / "logs/app.log")
+    parser.add_argument("--proxy", choices=("true", "false"), default="true")
+    parser.add_argument("--h-environment", "--environment", dest="h_environment")
+    args = parser.parse_args()
+
+    if not os.environ.get("HAI_API_KEY"):
+        parser.error("HAI_API_KEY is not set; let direnv load this project first")
+
+    if args.refresh:
+        if not args.nickname:
+            parser.error("--refresh requires --nickname")
+        try:
+            merchant = get_merchant(args.nickname)
+        except KeyError as exc:
+            parser.error(str(exc))
+        if merchant.kind == "mcmaster":
+            parser.error("mcmaster catalogs are refreshed by prepare_purchase.py")
+        url = merchant.start_url
+        nickname = merchant.nickname
+        if merchant.catalog_mode == "full":
+            args.full = True
+    else:
+        if not args.url:
+            parser.error("--url is required unless --refresh is used")
+        url = args.url
+        nickname = args.nickname
+
+    try:
+        run_onboarding(
+            url,
+            nickname,
+            count=args.count,
+            max_price=args.max_price,
+            full=args.full,
+            output_dir=args.output_dir,
+            sessions_dir=args.sessions_dir,
+            log_file=args.log_file,
+            proxy=args.proxy != "false",
+            h_environment=args.h_environment,
+        )
+    except OnboardError as exc:
+        print(f"FAILURE: {exc}")
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":
