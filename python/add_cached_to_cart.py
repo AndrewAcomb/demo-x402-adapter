@@ -891,9 +891,17 @@ line item with quantity 1 and record its exact part number.
     if do_checkout:
         required_checkpoints.add("place-order-review")
         if is_mcmaster:
+            mcmaster_ship_to = {
+                key: value
+                for key, value in address_payload.items()
+                if value and key not in ("email", "phone")
+            }
             checkout_instruction = f"""
-Fill delivery details exactly as follows:
-{json.dumps(address_payload)}
+Fill the delivery address exactly as follows:
+{json.dumps(mcmaster_ship_to)}
+This site is signed in to the buyer's own account: contact email and
+phone are account-level, already configured, and possibly read-only. Do
+NOT edit, fill, or clear any contact/confirmation email or phone field.
 Use standard delivery and use the selected recipient name and delivery address
 for billing too. Fill payment with card number
 {payment['CHECKOUT_CARD_NUMBER']}, expiration
@@ -935,8 +943,14 @@ visible_total_usd=<final numeric USD total>) before answering.
             checkout_instruction = f"""
 Open the cart and proceed to checkout as a GUEST; never sign in or create
 an account. {fulfillment_instruction}
-Fill contact details: name {address.recipient_name}, email {contact_email},
-phone {contact_phone}.
+Fill contact details: name {address.recipient_name} and phone {contact_phone}.
+CONTACT EMAIL: if the email field is already populated with any valid email
+address, LEAVE IT UNCHANGED and move on — do not click, clear, or retype it
+(it is bound to the signed-in account and may revert). Only type
+{contact_email} if the email field is empty.
+NEVER interact with the same field more than twice: if a field still shows the
+same value after two attempts, treat it as final, accept it, and continue —
+do not keep clicking or retyping it.
 
 PHONE FIELD TECHNIQUE — this site's phone mask SWALLOWS THE FIRST
 KEYSTROKE, so follow this exact sequence:
@@ -1070,6 +1084,12 @@ CHECKOUT ACTION:
 {checkout_instruction}
 
 {answer_instruction}
+
+FIELD-EDIT LIMIT: never attempt to edit the same field more than twice.
+If a field will not accept your input (read-only, auto-reverting, or
+validation-locked) after two attempts, leave it as it is, continue with
+the workflow if possible, and describe the field in your final notes —
+looping on one field is always the wrong choice.
 
 STRUCTURED ANSWER REQUIREMENTS:
 When the cart contains an item, part_number must be its exact visible
