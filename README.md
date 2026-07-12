@@ -1,99 +1,78 @@
-# demo-x402-adapter
+# BuyWith402
 
-An x402-enabled HTTP adapter that wraps a merchant which doesn't
-speak x402 or MPP natively. Autonomous agents pay in USDC on Base;
-this server settles, then drives fulfillment against the real
-merchant on their behalf.
+BuyWith402 makes ordinary online stores available to x402-native agents. A
+buyer pays USDC on Base, this API settles the payment, and an H browser agent
+checks out on the underlying merchant's site. The merchant does not need to
+integrate x402.
 
-Built for HCompany's computer-use hackathon.
+Built for H Company's computer-use hackathon.
 
-## Quick start
+## How it works
+
+1. An agent browses `GET /products` and chooses an item.
+2. `POST /products/{id}/purchase` returns an x402 payment challenge.
+3. After payment, the API queues fulfillment and returns an `order_id`.
+4. The buyer polls `GET /orders/{order_id}` for status, agent events, and
+   checkout screenshots.
+
+Purchases are real by default. Send `"dry_run": true` to stop safely at the
+merchant's order-review screen. Prices are all-inclusive: item price, service
+fee, estimated tax, and fulfillment cost.
+
+The Merchant Factory extends the same flow to new stores. A $5 x402-paid
+`POST /merchants` starts a browser agent that extracts a small validated
+catalog and publishes it to `GET /products` without a redeploy.
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/` | Machine-readable guide |
+| `GET` | `/products` | Browse or search with `?query=<text>` |
+| `GET` | `/products/{id}` | View one product |
+| `POST` | `/products/{id}/purchase` | Pay and queue fulfillment |
+| `GET` | `/orders/{order_id}` | Poll fulfillment progress |
+| `POST` | `/merchants` | Pay $5 and onboard a store |
+| `GET` | `/merchants/jobs/{job_id}` | Poll onboarding progress |
+
+All `GET` routes are free. Paid product routes declare the x402 Bazaar
+discovery extension so compatible agents can discover how to call them.
+
+## Local sanity check
+
+Requires Node.js 24.
 
 ```bash
-cp .env.example .env  # then set X402_PAY_TO to an EVM address you control
+cp .env.example .env
+# Set X402_PAY_TO to an EVM address you control.
 npm install
 npm run dev
 ```
 
-Server listens on `:3000`.
+Then browse the catalog and request a challenge:
 
 ```bash
-# Browse the catalog (free)
-curl http://localhost:3000/products
+curl 'http://localhost:3000/products?query=screw'
 
-# See a single product (free)
-curl http://localhost:3000/products/vit-d-30
-
-# Trigger the 402 challenge (no payment attached)
-curl -X POST http://localhost:3000/products/vit-d-30/purchase \
+curl -X POST http://localhost:3000/products/mcmaster:92224A100/purchase \
   -H 'Content-Type: application/json' \
-  -d '{"quantity":1,"shipping":{"name":"You","address_1":"123 Main","city":"SF","state":"CA","zip":"94114"}}'
+  -d '{"quantity":1,"dry_run":true,"shipping":{"name":"You","address_1":"123 Main St","city":"San Francisco","state":"CA","zip":"94114"}}'
 ```
 
-The last call returns HTTP 402 with the x402 payment challenge. To
-settle it, use any x402 client — Coinbase's `@x402/fetch` and
-`@x402/evm`, `x402-axios`, or the merchant-agnostic `mppx` CLI — with
-a Base wallet holding USDC.
+The second request intentionally returns HTTP 402. A compatible x402 client
+can sign the challenge and retry the request to create the order.
 
-## Merchant Factory
+Durable orders, live events, and dynamic catalogs require an Upstash-compatible
+Redis REST store. Without one, the static catalog and in-memory demo fallback
+still work. The Node and Vercel entry points are `src/server.ts` and
+`api/index.ts`.
 
-Turn any store URL into live x402 products, no redeploy: an H browser
-agent browses the store, extracts a validated catalog, and the products
-appear in `GET /products` — priced, purchasable, and Bazaar-discoverable
-— while you watch progress events.
+The browser workers and their setup live in [python/](./python/README.md). For
+the onboarding demo without H credentials, run `ONBOARD_MOCK=1 uv run python
+onboard_worker.py` from that directory.
 
-### Endpoints
-
-| Method | Path | Auth | Purpose |
-| --- | --- | --- | --- |
-| `POST` | `/merchants` | `X-Admin-Key` header | Queue an onboarding job. Body: `{ url, nickname?, display_name?, max_products? }`. Returns `job_id` + poll URL. |
-| `GET` | `/merchants/jobs/{job_id}` | none | Job status + live events. Same poll contract as `/orders/{id}`: pass `?since=<next_since>`, poll while `final=false`. |
-| `GET` | `/merchants` | none | Onboarded merchants with product counts. |
-
-The admin key is `ONBOARD_ADMIN_KEY` on the server: unset → `POST
-/merchants` answers 503 (feature disabled); wrong key → 401. Products are
-priced like the static catalog: merchant package price × 1.5 + $15
-shipping/tax buffer.
-
-### Run the onboarding worker
-
-From `python/` (needs the same Upstash env as the fulfillment worker, plus
-H credentials via direnv for real browsing):
+## Check
 
 ```bash
-uv run python onboard_worker.py                 # real H browse
-ONBOARD_MOCK=1 uv run python onboard_worker.py  # canned catalog, no H
+npm run typecheck
 ```
-
-Mock mode skips only the browser session: the event stream and every
-Redis write (dynamic catalog, merchants index, job status) go through the
-same code paths, so the API side behaves identically.
-
-### Offline dev loop (no Upstash, no H)
-
-```bash
-node scripts/dev-redis-stub.mjs   # in-memory Upstash-REST stub on :8199
-
-KV_REST_API_URL=http://localhost:8199 KV_REST_API_TOKEN=dev \
-X402_PAY_TO=0x0000000000000000000000000000000000000001 \
-ONBOARD_ADMIN_KEY=demo-key npm run dev
-
-cd python && KV_REST_API_URL=http://localhost:8199 KV_REST_API_TOKEN=dev \
-ONBOARD_MOCK=1 uv run python onboard_worker.py
-
-ONBOARD_ADMIN_KEY=demo-key scripts/demo-onboard.sh \
-  https://some-store.example/order
-```
-
-`scripts/demo-onboard.sh` posts the job, streams its events, and prints
-the enlarged live catalog when the job succeeds.
-
-## Deploy
-
-Ships anywhere Hono runs: Node (`npm start`), Bun (`bun src/server.ts`),
-Cloudflare Workers (via `hono/cloudflare-workers`), or Vercel (drop
-into `api/[[...route]].ts`).
-
-## Docs for contributors
-
-See [AGENTS.md](./AGENTS.md).

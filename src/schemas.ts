@@ -32,9 +32,9 @@ export const PurchaseBody = z.object({
 export type PurchaseBody = z.infer<typeof PurchaseBody>;
 
 /**
- * Body for POST /merchants (admin-only): onboard any store URL as a set of
- * x402-purchasable products. nickname must match the python-side registry
- * pattern; max_products caps how many items the browse extracts.
+ * Body for paid POST /merchants and the operator-only admin bypass. Nickname
+ * must match the Python-side registry pattern; max_products caps how many
+ * items the browser extracts.
  */
 export const OnboardMerchantBody = z.object({
   url: z

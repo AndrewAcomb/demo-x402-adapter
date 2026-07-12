@@ -16,7 +16,7 @@ their endpoint as the contract. We work the other direction: we make the
 merchant itself appear as a native, permissionlessly discoverable x402
 seller, so any agent that can sign a USDC transfer can find and buy from
 it with no relationship to us or to the merchant. Onboarding a merchant
-is one authenticated POST; buying from one requires no key at all.
+is one $5 x402-paid POST; buying from one requires no key at all.
 
 The whole loop is watchable and honest about its state: onboarding jobs
 and orders stream progress events (including checkout screenshots) over
