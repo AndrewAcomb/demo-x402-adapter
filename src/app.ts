@@ -110,7 +110,13 @@ app.get('/', (c) =>
     endpoints: [
       { method: 'GET', path: '/', description: 'This guide.' },
       { method: 'GET', path: '/health', description: 'Service status.' },
-      { method: 'GET', path: '/products', description: 'List all products (free).' },
+      {
+        method: 'GET',
+        path: '/products',
+        description:
+          'List all products (free). Optional ?query=<text> filters by case-insensitive ' +
+          'substring across id, name, description, and merchant (e.g. ?query=cookie).',
+      },
       { method: 'GET', path: '/products/{id}', description: 'One product (free).' },
       {
         method: 'POST',
@@ -184,9 +190,21 @@ const PRICING_NOTE =
   'the full x402 charge. Each item’s fulfillment field says how it reaches you — ' +
   'fixed per item, not selectable at purchase.';
 
-app.get('/products', async (c) =>
-  c.json({ pricing_note: PRICING_NOTE, products: await listMergedProducts() }),
-);
+app.get('/products', async (c) => {
+  let products = await listMergedProducts();
+  const query = c.req.query('query')?.trim().toLowerCase();
+  if (query) {
+    const hit = (v: unknown) => typeof v === 'string' && v.toLowerCase().includes(query);
+    products = products.filter(
+      (p) =>
+        hit(p.id) ||
+        hit(p.name) ||
+        hit(p.description) ||
+        hit((p as { merchant?: string }).merchant),
+    );
+  }
+  return c.json({ pricing_note: PRICING_NOTE, query: query || undefined, products });
+});
 
 app.get('/products/:id', async (c) => {
   const product = await getMergedProduct(c.req.param('id'));
