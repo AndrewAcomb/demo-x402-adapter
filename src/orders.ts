@@ -35,7 +35,10 @@ async function redis(command: (string | number)[]): Promise<unknown> {
   return data.result;
 }
 
-export type OrderStatus = 'queued' | 'running' | 'ready_to_place' | 'placed' | 'failed';
+export type OrderStatus = 'queued' | 'running' | 'retrying' | 'ready_to_place' | 'placed' | 'failed';
+
+/** Statuses that will not change again (barring a manual re-queue). */
+export const FINAL_STATUSES: ReadonlySet<OrderStatus> = new Set(['ready_to_place', 'placed', 'failed']);
 
 export interface OrderRecord {
   order_id: string;

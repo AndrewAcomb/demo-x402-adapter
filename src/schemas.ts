@@ -37,7 +37,7 @@ export const OrderResponse = z.object({
   product_id: z.string(),
   quantity: z.number().int(),
   dry_run: z.boolean(),
-  status: z.enum(['queued', 'running', 'ready_to_place', 'placed', 'failed']),
+  status: z.enum(['queued', 'running', 'retrying', 'ready_to_place', 'placed', 'failed']),
   message: z.string(),
 });
 export type OrderResponse = z.infer<typeof OrderResponse>;

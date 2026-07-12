@@ -37,6 +37,10 @@ BLOB_TOKEN = os.environ.get("BLOB_READ_WRITE_TOKEN")
 ALLOW_REAL_ORDERS = os.environ.get("ALLOW_REAL_ORDERS") == "1"
 MAX_TOTAL = float(os.environ.get("WORKER_MAX_TOTAL", "50"))
 POLL_SECONDS = float(os.environ.get("WORKER_POLL_SECONDS", "3"))
+# Browser-agent runs flake sometimes (structured-answer misses, etc.), so a
+# failed attempt re-queues automatically. Buyers only ever see the scary
+# "failed" status after the LAST attempt; in between the order is "retrying".
+MAX_ATTEMPTS = int(os.environ.get("WORKER_MAX_ATTEMPTS", "3"))
 
 HERE = Path(__file__).resolve().parent
 
@@ -249,8 +253,24 @@ def handle_order(order_id: str) -> None:
         set_status(order_id, final, result)
         publish(order_id, "worker", f"Fulfillment finished: {final}.")
     else:
-        set_status(order_id, "failed", result)
-        publish(order_id, "worker", f"Fulfillment failed (exit {exit_code}). See events above.")
+        attempts = int(redis(["HINCRBY", f"order:{order_id}", "attempts", 1]) or 1)
+        if attempts < MAX_ATTEMPTS:
+            set_status(order_id, "retrying", result)
+            publish(
+                order_id,
+                "worker",
+                f"Attempt {attempts} of {MAX_ATTEMPTS} did not complete — retrying "
+                "automatically. Your payment is safe; no action needed.",
+            )
+            redis(["LPUSH", "orders:queue", order_id])
+        else:
+            set_status(order_id, "failed", result)
+            publish(
+                order_id,
+                "worker",
+                f"Fulfillment failed after {attempts} attempts. Contact the merchant "
+                "with this order id for a refund or manual retry.",
+            )
 
 
 def main() -> None:

@@ -18,7 +18,7 @@ import { declareDiscoveryExtension } from '@x402/extensions/bazaar';
 import { getProduct, listProducts } from './catalog.js';
 import { PurchaseBody, type OrderResponse } from './schemas.js';
 import { enqueueFulfillment, getFulfillment } from './fulfillment.js';
-import { createOrder, getOrder, getOrderEvents, ordersConfigured } from './orders.js';
+import { FINAL_STATUSES, createOrder, getOrder, getOrderEvents, ordersConfigured } from './orders.js';
 
 const NETWORK = (process.env.X402_NETWORK ?? 'eip155:84532') as Network;
 const PAY_TO = process.env.X402_PAY_TO as `0x${string}` | undefined;
@@ -109,7 +109,11 @@ app.get('/', (c) =>
         description:
           'Order status + live fulfillment progress events (free). Poll with ' +
           '?since=<next_since> for incremental updates, including screenshots of the ' +
-          'agent checking out on the underlying merchant.',
+          'agent checking out on the underlying merchant. Keep polling while ' +
+          'final=false (statuses: queued, running, retrying — transient attempt ' +
+          'failures retry automatically). When final=true, outcome is "success" ' +
+          '(status ready_to_place or placed) or "failure" (status failed, only after ' +
+          'all retries are exhausted).',
       },
     ],
     dry_run:
@@ -154,12 +158,17 @@ app.get('/orders/:orderId', async (c) => {
     if (!order) return c.json({ error: 'not_found' }, 404);
     const since = Math.max(0, Number(c.req.query('since') ?? 0) || 0);
     const events = await getOrderEvents(orderId, since);
+    const final = FINAL_STATUSES.has(order.status);
     return c.json({
       order_id: order.order_id,
       product_id: order.product_id,
       quantity: order.quantity,
       dry_run: order.dry_run,
       status: order.status,
+      // Explicit success semantics so pollers never interpret status names:
+      // keep polling while final=false; outcome is set once final=true.
+      final,
+      outcome: final ? (order.status === 'failed' ? 'failure' : 'success') : undefined,
       created_at: order.created_at,
       updated_at: order.updated_at,
       result: order.result,
