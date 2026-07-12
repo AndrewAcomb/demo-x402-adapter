@@ -7,6 +7,21 @@ merchant on their behalf.
 
 Built for HCompany's computer-use hackathon.
 
+## Voice Concierge (Track C)
+
+`concierge/` is a standalone voice-driven buyer for this merchant:
+speak an order, Holo3 parses it and picks the product, the concierge
+discovers the API on the x402 Bazaar, pays the 402 challenge in USDC,
+and narrates the H browser agent's checkout by voice while its
+screenshots stream on screen. Runs fully offline with zero keys:
+
+```bash
+cd concierge && npm install && npm run demo   # http://localhost:4020
+```
+
+See `concierge/README.md` for the mock matrix and the live-demo
+runbook, and `TRACK.md` for the judging pitch.
+
 ## Quick start
 
 ```bash
