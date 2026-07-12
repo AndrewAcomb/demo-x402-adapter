@@ -254,7 +254,11 @@ def handle_order(order_id: str) -> None:
         publish(order_id, "worker", f"Fulfillment finished: {final}.")
     else:
         attempts = int(redis(["HINCRBY", f"order:{order_id}", "attempts", 1]) or 1)
-        if attempts < MAX_ATTEMPTS:
+        # Never auto-retry a real-order run unless the result proves Place
+        # Order was not clicked — a blind retry could place a duplicate
+        # merchant order. (Dry runs are always safe to retry.)
+        click_unproven = place_order and (result is None or result.get("place_order_clicked") is not False)
+        if attempts < MAX_ATTEMPTS and not click_unproven:
             set_status(order_id, "retrying", result)
             publish(
                 order_id,
@@ -265,11 +269,15 @@ def handle_order(order_id: str) -> None:
             redis(["LPUSH", "orders:queue", order_id])
         else:
             set_status(order_id, "failed", result)
+            reason = (
+                "Automatic retry withheld: could not prove the merchant order was not "
+                "already placed. " if click_unproven else ""
+            )
             publish(
                 order_id,
                 "worker",
-                f"Fulfillment failed after {attempts} attempts. Contact the merchant "
-                "with this order id for a refund or manual retry.",
+                f"Fulfillment failed after {attempts} attempt(s). {reason}Contact the "
+                "merchant with this order id for a refund or manual retry.",
             )
 
 
