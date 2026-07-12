@@ -137,11 +137,6 @@ app.get('/', (c) =>
           'all retries are exhausted).',
       },
       {
-        method: 'GET',
-        path: '/merchants',
-        description: 'Merchants onboarded through the Merchant Factory, with product counts (free).',
-      },
-      {
         method: 'POST',
         path: '/merchants',
         description:
@@ -149,14 +144,8 @@ app.get('/', (c) =>
           'endpoint ($5.00 x402 charge — you are funding the browser-agent run). A ' +
           'browser agent extracts a validated catalog, estimates tax/fulfillment ' +
           'economics, and its products go live in GET /products within minutes. Body: ' +
-          '{ url, nickname?, display_name?, max_products? }. Returns a job_id.',
-      },
-      {
-        method: 'GET',
-        path: '/merchants/jobs/{job_id}',
-        description:
-          'Onboarding-job status + live progress events (free). Same poll contract as ' +
-          '/orders/{order_id}: pass ?since=<next_since>, keep polling while final=false.',
+          '{ url, nickname?, display_name?, max_products? }. The response includes a ' +
+          'poll URL — same live-events contract as orders.',
       },
     ],
     pricing:
