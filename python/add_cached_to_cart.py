@@ -846,7 +846,12 @@ def main() -> None:
 
         tools.append(audit_tool(wait_for_email_2fa_code))
 
-    if not is_mcmaster:
+    # The operator-typed SMS fallback needs an interactive terminal. The
+    # autonomous worker runs add_cached_to_cart as a subprocess with no stdin,
+    # where blocking on input() would hang until timeout — so only offer this
+    # tool under a real TTY; otherwise H must fail fast with a clear blocker.
+    operator_sms_available = not is_mcmaster and sys.stdin.isatty()
+    if operator_sms_available:
 
         def wait_for_operator_sms_code() -> str:
             """Ask the human operator to type in an SMS verification code."""
@@ -907,7 +912,11 @@ def main() -> None:
                 return code
             except Exception:
                 local_banner(
-                    "SMS 2FA TOOL FAILED", LOCAL_FAILURE, component="SMS2FA"
+                    f"SMS 2FA TOOL FAILED — no code reached {sms_reader.number} "
+                    f"within {timeout_seconds}s. If the site did send one, the phone "
+                    f"entered at checkout does not match this agent number, so the "
+                    f"code went to a number we cannot read.",
+                    LOCAL_FAILURE, component="SMS2FA",
                 )
                 raise
 
@@ -1047,18 +1056,23 @@ NEVER interact with the same field more than twice: if a field still shows the
 same value after two attempts, treat it as final, accept it, and continue —
 do not keep clicking or retyping it.
 
-PHONE FIELD TECHNIQUE — this site's phone mask SWALLOWS THE FIRST
-KEYSTROKE, so follow this exact sequence:
-1. Click the field, then clear it completely with select-all (cmd+a or
-   ctrl+a) followed by ONE backspace. A leftover "+1" prefix is fine.
-2. Type ONLY the first digit, {contact_phone[0]}, and read back whether
-   it appeared after the +1. If it did not appear, type it once more
-   until exactly one {contact_phone[0]} shows.
-3. Then type the remaining nine digits: {contact_phone[1:]}.
-4. Read back: the field must contain the digits {contact_phone} in
-   order (mask punctuation like parentheses is fine).
-5. If wrong, clear fully as in step 1 and repeat from step 2. NEVER
-   delete one character at a time.
+PHONE FIELD — this field auto-formats to XXX-XXX-XXXX as you type, and writing
+several digits at once makes the mask REORDER them (it most often scrambles the
+last four). Enter it carefully:
+1. Click the field and select-all (cmd+a). Do NOT backspace one char at a time;
+   a single overwrite replaces the selection cleanly.
+2. Type the full number {contact_phone} in ONE write with overwrite enabled.
+   The dashes the field inserts are EXPECTED — do not remove them; a formatted
+   XXX-XXX-XXXX with the correct digits IS correct.
+3. Read back ALL TEN digits, ignoring dashes/parentheses. They must equal
+   {contact_phone} exactly, digit for digit — check the LAST FOUR especially.
+4. If any digit is wrong, select-all and re-type once. If a single write keeps
+   scrambling, fall back to typing ONE digit per keystroke, verifying the
+   running value after each. NEVER delete one character at a time.
+5. CRITICAL: this number receives the payment-verification SMS. If after these
+   attempts the field is not EXACTLY {contact_phone}, do NOT place the order;
+   return success=false with blocker="phone_entry_mismatch" and the digits you
+   actually see. A wrong number here means the order can never be verified.
 Apply the same read-back-and-verify habit to every text field you fill.
 
 If a tip is requested, set it to zero if possible,
@@ -1153,17 +1167,30 @@ part_number=null, cart_quantity=0, place_order_visible=false, and
 place_order_clicked=false.
 """.strip()
 
+    stop_on_sms = (
+        "STOP and return success=false with blocker=\"sms_2fa_unavailable\" "
+        "(the code was sent to a phone this run cannot read — do not wait)."
+    )
+    operator_fallback = (
+        " If it times out, call wait_for_operator_sms_code as a fallback."
+        if operator_sms_available
+        else f" If it times out, {stop_on_sms}"
+    )
     if sms_reader is not None:
         sms_code_instruction = (
             "If the site hard-requires a code it sent by SMS, call "
-            "wait_for_sms_2fa_code (the agent owns that phone number). If that "
-            "times out, call wait_for_operator_sms_code as a fallback."
+            "wait_for_sms_2fa_code (the agent owns that phone number)."
+            + operator_fallback
         )
-    else:
+    elif operator_sms_available:
         sms_code_instruction = (
             "If the site hard-requires a code it sent by SMS, call "
             "wait_for_operator_sms_code (a human reads it off the phone; allow "
             "up to two minutes)."
+        )
+    else:
+        sms_code_instruction = (
+            f"If the site hard-requires a code it sent by SMS, {stop_on_sms}"
         )
     if is_mcmaster:
         identity_instruction = f"""
