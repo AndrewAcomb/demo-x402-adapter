@@ -10,3 +10,5 @@ hackathon-firefox-profile.zip
 hackathon-chrome-user-data.zip
 __pycache__/
 *.pyc
+.vercel
+.env*

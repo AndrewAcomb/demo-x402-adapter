@@ -976,6 +976,11 @@ line item with quantity 1 and record its exact part number.
     else:
         add_instruction = "Do not add any products after clearing the cart."
 
+    # Square-style storefronts gate the cart behind a fulfillment (delivery/
+    # pickup) modal and reject every add-to-order with "The input provided was
+    # invalid." until it is completed. Guest checkout fills this in before the
+    # ADD action; McMaster (account-based) has no such modal and leaves it "".
+    fulfillment_prerequisite = ""
     if do_checkout:
         required_checkpoints.add("place-order-review")
         if is_mcmaster:
@@ -1030,7 +1035,9 @@ visible_total_usd=<final numeric USD total>) before answering.
             )
             checkout_instruction = f"""
 Open the cart and proceed to checkout as a GUEST; never sign in or create
-an account. {fulfillment_instruction}
+an account. If delivery/pickup fulfillment was not already completed in the
+fulfillment-first step, do it now: {fulfillment_instruction} Otherwise verify it
+is still set and do not re-enter it.
 Fill contact details: name {address.recipient_name} and phone {contact_phone}.
 CONTACT EMAIL: if the email field is already populated with any valid email
 address, LEAVE IT UNCHANGED and move on — do not click, clear, or retype it
@@ -1067,6 +1074,38 @@ NOT CLICK THAT BUTTON. Call
 capture_checkout_checkpoint(checkpoint="place-order-review",
 visible_part_number="<exact visible item name>", visible_quantity=1,
 visible_total_usd=<final numeric USD total>) before answering.
+""".strip()
+            if merchant.fulfillment == "pickup":
+                fulfillment_detail = (
+                    "IMPORTANT: this modal DEFAULTS to the Delivery tab. Click the "
+                    "Pickup tab FIRST, then choose the store and the earliest "
+                    "available time. Pickup needs NO address — never type a delivery "
+                    "address for this merchant."
+                )
+            else:
+                fulfillment_detail = (
+                    "The delivery address is a single autocomplete field — type the "
+                    "street address, and if a dropdown of suggestions appears, pick "
+                    "the matching one; read the field back to confirm it is populated."
+                )
+            fulfillment_prerequisite = f"""
+FULFILLMENT FIRST — THIS SITE HARD-GATES THE CART BEHIND IT:
+On load this storefront shows a fulfillment modal with a Pickup/Delivery toggle.
+Until a VALID fulfillment is selected and submitted, the cart rejects every
+"Add to order" with "The input provided was invalid." Do NOT escape this modal
+with the X, and do NOT proceed ("View menu"/"Update changes") while the required
+field is empty — both leave fulfillment unset and every later add will fail.
+
+Set fulfillment correctly BEFORE adding anything: {fulfillment_instruction}
+{fulfillment_detail}
+Then submit ("Update changes" or "View menu") and confirm the modal closes and
+the top bar shows your selection.
+
+If an "Add to order" fails with "The input provided was invalid.", STOP clicking
+Add / Try again / X — the cause is missing fulfillment, not the item. Reopen the
+fulfillment modal, set it correctly, submit, then add the item. Never click the
+same button more than twice in a row; if adds still fail after fulfillment is
+confirmed, return success=false with the exact error text as the blocker.
 """.strip()
         if args.place_order:
             required_checkpoints.add("order-confirmed")
@@ -1164,6 +1203,8 @@ browser state inherited by this invocation, especially after --resume.
 
 RESET ACTION:
 {reset_instruction}
+
+{fulfillment_prerequisite}
 
 ADD ACTION:
 {add_instruction}
