@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import json
 import os
 import re
 import sys
 import textwrap
 import time
-from concurrent.futures import ThreadPoolExecutor
+import traceback
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -364,6 +365,10 @@ def main() -> None:
     )
     parser.add_argument("--max-total", type=float, default=100.0)
     parser.add_argument(
+        "--order-id",
+        help="Fulfillment order ID used only to correlate private run artifacts",
+    )
+    parser.add_argument(
         "--place-order",
         action="store_true",
         help="Irreversibly click Place Order after local SKU/quantity/total authorization",
@@ -515,7 +520,7 @@ def main() -> None:
                 timing_file.flush()
             timing_path.chmod(0o600)
 
-    record_timing("run-started")
+    record_timing("run-started", order_id=args.order_id)
     enable_tee(args.log_file, demo_session_id, request_id)
     part_number = str(product["part_number"]) if product is not None else None
     start_url = str(product["url"]) if product is not None else None
@@ -536,6 +541,9 @@ def main() -> None:
     password = os.environ.get("MCMASTER_PASSWORD")
     if is_mcmaster and (not email or not password):
         parser.error("MCMASTER_EMAIL and MCMASTER_PASSWORD must be set")
+    for credential in (email, password):
+        if credential:
+            RUNTIME_SECRETS.add(credential)
     payment: dict[str, str | None] = {}
     card_name = ""
     if do_checkout:
@@ -549,13 +557,75 @@ def main() -> None:
         missing = [name for name, value in payment.items() if not value]
         if missing:
             parser.error(f"Missing checkout variables in .env: {', '.join(missing)}")
-        RUNTIME_SECRETS.add(str(payment["CHECKOUT_CARD_NUMBER"]))
-        RUNTIME_SECRETS.add(str(payment["CHECKOUT_CARD_CVV"]))
+        for value in payment.values():
+            if value:
+                RUNTIME_SECRETS.add(str(value))
         assert address is not None
         card_name = os.environ.get("CHECKOUT_CARD_NAME", address.recipient_name)
+        RUNTIME_SECRETS.add(card_name)
+        for value in address_payload.values():
+            if isinstance(value, str) and value:
+                RUNTIME_SECRETS.add(value)
 
     client = Client()
     tools = []
+    tool_audit_path = artifact_dir / f"{artifact_prefix}-local-tools.jsonl"
+
+    def append_tool_audit(record: dict[str, object]) -> None:
+        with tool_audit_path.open("a", encoding="utf-8") as audit_file:
+            audit_file.write(json.dumps(record, separators=(",", ":")) + "\n")
+            audit_file.flush()
+        tool_audit_path.chmod(0o600)
+
+    def audit_tool(function):
+        """Record every local H callback, preserving its SDK-visible signature."""
+        @functools.wraps(function)
+        def audited(*tool_args, **tool_kwargs):
+            tool_name = function.__name__
+            record_timing("local-tool-started", tool=tool_name, order_id=args.order_id)
+            base_record = {
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "demo_session_id": demo_session_id,
+                "request_id": request_id,
+                "order_id": args.order_id,
+                "tool": tool_name,
+            }
+            append_tool_audit({**base_record, "outcome": "started"})
+            try:
+                value = function(*tool_args, **tool_kwargs)
+            except Exception as exc:
+                safe_traceback = redact_secrets(traceback.format_exc())
+                record = {
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                    "demo_session_id": demo_session_id,
+                    "request_id": request_id,
+                    "order_id": args.order_id,
+                    "tool": tool_name,
+                    "outcome": "error",
+                    "error_type": type(exc).__name__,
+                    "traceback": safe_traceback,
+                }
+                append_tool_audit(record)
+                record_timing(
+                    "local-tool-failed",
+                    tool=tool_name,
+                    order_id=args.order_id,
+                    error_type=type(exc).__name__,
+                )
+                raise
+            record = {
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "demo_session_id": demo_session_id,
+                "request_id": request_id,
+                "order_id": args.order_id,
+                "tool": tool_name,
+                "outcome": "success",
+            }
+            append_tool_audit(record)
+            record_timing("local-tool-succeeded", tool=tool_name, order_id=args.order_id)
+            return value
+
+        return audited
     latest_image: dict[str, object] | None = None
     latest_image_index = 0
     image_lock = Lock()
@@ -590,10 +660,28 @@ def main() -> None:
         visible_total_usd: float | None = None,
     ) -> str:
         """Save the current browser screenshot at a named checkout checkpoint."""
+        nonlocal latest_image, latest_image_index
         nonlocal reviewed_part_number, reviewed_quantity, reviewed_total
         if checkpoint not in CHECKPOINTS:
             allowed = ", ".join(CHECKPOINTS)
             raise ValueError(f"Unknown checkpoint {checkpoint!r}; expected one of: {allowed}")
+        # The SDK's wait loop is the sole event-stream consumer and executes
+        # this callback. Fetch the latest already-recorded observation here;
+        # running a second live stream raced the wait loop and could strand a
+        # pending custom-tool call until the H session timed out.
+        changes = client.sessions.get_session_changes(
+            session.id,
+            from_index=0,
+            limit=None,
+            include_events=True,
+            wait_for_seconds=0,
+        )
+        for image_index, event in enumerate(changes.new_events or [] if changes else []):
+            payload = event.model_dump(mode="json")
+            data = payload.get("data") or {}
+            if data.get("kind") == "observation_event" and data.get("image"):
+                latest_image = data["image"]
+                latest_image_index = image_index
         with image_lock:
             image = latest_image
             image_index = latest_image_index
@@ -665,7 +753,7 @@ def main() -> None:
         )
         return f"Saved {checkpoint} checkpoint for {demo_session_id}"
 
-    tools.append(capture_checkout_checkpoint)
+    tools.append(audit_tool(capture_checkout_checkpoint))
 
     if args.place_order:
 
@@ -713,7 +801,7 @@ def main() -> None:
             )
             return "AUTHORIZED: click Place Order exactly once, then verify confirmation"
 
-        tools.append(authorize_place_order)
+        tools.append(audit_tool(authorize_place_order))
     reader = ImapCodeReader.from_env()
     if (
         reader is not None
@@ -756,7 +844,7 @@ def main() -> None:
                 )
                 raise
 
-        tools.append(wait_for_email_2fa_code)
+        tools.append(audit_tool(wait_for_email_2fa_code))
 
     if not is_mcmaster:
 
@@ -783,7 +871,7 @@ def main() -> None:
             )
             return code
 
-        tools.append(wait_for_operator_sms_code)
+        tools.append(audit_tool(wait_for_operator_sms_code))
 
     sms_reader = TwilioSmsReader.from_env() if not is_mcmaster else None
     if sms_reader is not None:
@@ -823,7 +911,7 @@ def main() -> None:
                 )
                 raise
 
-        tools.append(wait_for_sms_2fa_code)
+        tools.append(audit_tool(wait_for_sms_2fa_code))
 
     browser_runtime = HBrowserRuntime.resolve(client, args.h_environment)
     proxy_instruction = (
@@ -1133,7 +1221,7 @@ true or false, never null.
             answer_schema=CartResult,
             tools=tools,
             messages=workflow_message,
-            max_steps=45 if is_mcmaster else 90,
+            max_steps=80 if is_mcmaster else 90,
             max_time_s=480 if is_mcmaster else 900,
             idle_timeout_s=DEFAULT_IDLE_TIMEOUT_SECONDS,
         )
@@ -1159,23 +1247,50 @@ true or false, never null.
             component="CartFlow",
         )
 
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            waiter = executor.submit(
-                session.wait_for_completion,
-                timeout_seconds=510 if is_mcmaster else 960,
-                tools=tools,
-                answer_schema=CartResult,
-            )
-            for event in session.stream(from_index=stream_from_index):
-                print_live_event(event)
+    def export_h_status() -> tuple[object, str]:
+        status_snapshot = session.status()
+        final_status = str(status_snapshot.status)
+        status_payload = (
+            status_snapshot.model_dump(mode="json")
+            if hasattr(status_snapshot, "model_dump")
+            else {"status": final_status}
+        )
+        write_private_json(
+            artifact_dir / f"{artifact_prefix}-h-status.json",
+            {
+                "demo_session_id": demo_session_id,
+                "request_id": request_id,
+                "order_id": args.order_id,
+                "h_session_id": session.id,
+                "status": redact_secrets(status_payload),
+            },
+        )
+        return status_snapshot, final_status
+
+    h_events_path = artifact_dir / f"{artifact_prefix}-h-events.jsonl"
+
+    def export_h_events(events) -> None:
+        with h_events_path.open("w", encoding="utf-8") as events_file:
+            for event in events:
                 payload = event.model_dump(mode="json")
-                data = payload.get("data") or {}
-                if data.get("kind") == "observation_event" and data.get("image"):
-                    with image_lock:
-                        latest_image = data["image"]
-                        latest_image_index += 1
-            result = waiter.result()
+                safe_payload = redact_secrets(payload)
+                events_file.write(json.dumps(safe_payload, separators=(",", ":")) + "\n")
+        h_events_path.chmod(0o600)
+
+    try:
+        # One polling owner must both observe pending tool calls and post their
+        # results. A concurrent session.stream() consumer could advance past a
+        # call before this waiter saw it, which is what stranded S017.
+        result = session.wait_for_completion(
+            from_index=stream_from_index,
+            timeout_seconds=510 if is_mcmaster else 960,
+            tools=tools,
+            answer_schema=CartResult,
+        )
+        export_h_events(result.events)
+        for event in result.events:
+            print_live_event(event)
+        status_snapshot, final_status = export_h_status()
     except Exception as exc:
         record_timing(
             "session-completed",
@@ -1183,6 +1298,20 @@ true or false, never null.
             success=False,
             error_type=type(exc).__name__,
         )
+        try:
+            changes = client.sessions.get_session_changes(
+                session.id,
+                from_index=0,
+                limit=None,
+                include_events=True,
+                wait_for_seconds=0,
+            )
+            export_h_events(changes.new_events or [] if changes else [])
+            export_h_status()
+        except Exception as status_exc:  # noqa: BLE001 - preserve original failure
+            record_timing(
+                "h-status-export-failed", error_type=type(status_exc).__name__
+            )
         raise
 
     missing_checkpoints = required_checkpoints - captured_checkpoints
@@ -1309,7 +1438,6 @@ true or false, never null.
     # An idle session is resumable regardless of verdict — a failed run
     # (budget exhausted one field from the finish) is exactly when
     # `--resume` is most valuable.
-    final_status = str(session.status().status)
     if final_status == "idle":
         saved_at = datetime.now(UTC)
         write_private_json(

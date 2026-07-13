@@ -87,6 +87,11 @@ def blob_put(pathname: str, data: bytes, content_type: str = "image/png") -> str
 
 
 def publish(order_id: str, stage: str, message: str, screenshot_url: str | None = None) -> None:
+    """Publish buyer-visible progress without risking the fulfillment process.
+
+    Redis status writes remain strict, but a transient outage in this optional
+    live feed must never stop us draining the browser subprocess's stdout.
+    """
     event: dict[str, object] = {
         "t": datetime.now(UTC).isoformat(timespec="seconds"),
         "stage": stage,
@@ -94,9 +99,17 @@ def publish(order_id: str, stage: str, message: str, screenshot_url: str | None 
     }
     if screenshot_url:
         event["screenshot_url"] = screenshot_url
-    redis(["RPUSH", f"order:{order_id}:events", json.dumps(event, separators=(",", ":"))])
-    redis(["EXPIRE", f"order:{order_id}:events", 60 * 60 * 24 * 7])
-    redis(["HSET", f"order:{order_id}", "updated_at", event["t"]])
+    try:
+        redis(["RPUSH", f"order:{order_id}:events", json.dumps(event, separators=(",", ":"))])
+        redis(["EXPIRE", f"order:{order_id}:events", 60 * 60 * 24 * 7])
+        redis(["HSET", f"order:{order_id}", "updated_at", event["t"]])
+    except Exception as exc:  # noqa: BLE001 - progress is deliberately best-effort
+        print(
+            f"[worker] progress publish failed for order {order_id} "
+            f"at stage {stage}: {type(exc).__name__}: {exc}",
+            file=sys.__stderr__,
+            flush=True,
+        )
 
 
 def set_status(order_id: str, status: str, result: dict | None = None) -> None:
@@ -188,6 +201,8 @@ def handle_order(order_id: str) -> None:
             "add_cached_to_cart.py",
             "--merchant",
             merchant_nickname,
+            "--order-id",
+            order_id,
             "--product",
             order["product_id"],
             "--recipient",

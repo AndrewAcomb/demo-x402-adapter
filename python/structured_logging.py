@@ -166,6 +166,18 @@ class ContextFormatter(logging.Formatter):
         return super().formatTime(record, "%Y-%m-%d %H:%M:%S")
 
 
+class SafeStreamHandler(logging.StreamHandler):
+    """Drop terminal write failures instead of reporting them through stderr.
+
+    stdout and stderr are redirected into this same logger.  The default
+    logging error path writes to stderr and therefore recurses indefinitely
+    when the parent has closed the subprocess pipe.
+    """
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        return
+
+
 class LoggingStream:
     """Turn arbitrary print output into complete classified log records."""
 
@@ -194,7 +206,10 @@ class LoggingStream:
             self._emit(self.buffer)
             self.buffer = ""
         for handler in self.logger.handlers:
-            handler.flush()
+            try:
+                handler.flush()
+            except (BrokenPipeError, OSError):
+                pass
 
     def _emit(self, line: str) -> None:
         clean = ANSI_ESCAPE.sub("", line).strip()
@@ -239,7 +254,7 @@ def configure_structured_output(
     else:
         quiet = bool(sys.__stdout__ and sys.__stdout__.isatty())
     if not quiet:
-        terminal = logging.StreamHandler(sys.__stdout__)
+        terminal = SafeStreamHandler(sys.__stdout__)
         terminal.setFormatter(formatter)
         terminal.addFilter(context_filter)
         logger.addHandler(terminal)
