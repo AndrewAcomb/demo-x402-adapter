@@ -23,6 +23,33 @@ The Merchant Factory extends the same flow to new stores. A $5 x402-paid
 `POST /merchants` starts a browser agent that extracts a small validated
 catalog and publishes it to `GET /products` without a redeploy.
 
+## Architecture
+
+```
+buyer agent ──x402 USDC──▶ API (Hono, one Vercel function)
+                              │ settle via Coinbase CDP facilitator (Base)
+                              ▼
+                        Upstash Redis  ◀─ poll ─  Python workers (operator box)
+                 orders · job queues · live            │
+                 events · dynamic catalog              ▼
+                              ▲            H Company cloud browser agents
+   screenshots ─▶ Vercel Blob ┘                        │
+                                            real merchant checkouts
+                                          (McMaster-Carr, Square, Toast…)
+```
+
+- **API** — TypeScript/Hono on Vercel; per-product pricing from a merged
+  static + Redis catalog; x402 challenges carried in both header and body.
+- **State** — Upstash Redis over REST is the only database: durable orders,
+  onboarding jobs, work queues, event streams, dynamic catalog.
+- **Workers** — two Python loops (fulfillment, merchant onboarding) pop the
+  queues and drive H computer-use agents; screenshots land in Vercel Blob,
+  progress events in Redis for buyers to poll.
+- **Safety** — a real Place Order needs buyer intent (`dry_run: false`) AND a
+  worker env flag AND a local tool that validates the visible part, quantity,
+  and total before authorizing exactly one click; ambiguous failures never
+  auto-retry.
+
 ## API
 
 | Method | Path | Purpose |
