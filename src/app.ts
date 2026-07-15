@@ -87,11 +87,39 @@ const priceForRequest = async (ctx: { path: string }) => {
 
 const app = new Hono();
 
+// Kill switch: with SERVICE_DISABLED=1 every route except the root guide
+// returns 403. Registered before the x402 payment middleware on purpose —
+// paid routes must never issue a 402 challenge while fulfillment is off,
+// or agents would settle real USDC for orders nobody ships.
+const SERVICE_DISABLED = process.env.SERVICE_DISABLED === '1';
+
+app.use(async (c, next) => {
+  if (SERVICE_DISABLED && c.req.path !== '/') {
+    return c.json(
+      {
+        error: 'service_disabled',
+        message:
+          'BuyWith402 is paused: purchases and fulfillment are disabled. ' +
+          'GET / for details. Check back later.',
+      },
+      403,
+    );
+  }
+  await next();
+});
+
 // Agent-friendly API guide at the root: crawlers and agents that probe the
 // bare domain should find a machine-readable map, not a 404.
 app.get('/', (c) =>
   c.json({
     name: 'BuyWith402',
+    ...(SERVICE_DISABLED && {
+      status: 'paused',
+      notice:
+        'The service is currently paused: every endpoint below returns 403 and ' +
+        'no payments are accepted or settled. The API described here will return ' +
+        'when the service resumes.',
+    }),
     description:
       'Buy real physical products (currently McMaster-Carr hardware) with one x402 ' +
       'USDC payment on Base. No account needed — the payment is the identity. All ' +

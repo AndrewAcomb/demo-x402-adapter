@@ -76,7 +76,7 @@ For email 2FA, configure a private IMAP mailbox in `.env`:
 ```bash
 EMAIL_IMAP_HOST="imap.example.com"
 EMAIL_IMAP_PORT="993"
-EMAIL_IMAP_USERNAME="buyer@buywith402.com"
+EMAIL_IMAP_USERNAME="buyer@example.com"
 EMAIL_IMAP_PASSWORD="mailbox-password-or-app-password"
 EMAIL_IMAP_FOLDER="INBOX"
 EMAIL_2FA_SENDER_FILTER="mcmaster"
